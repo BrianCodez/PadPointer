@@ -33,7 +33,13 @@ Move over an input field and press A. The app receives a 50 ms touch gesture; it
 
 Settings include speed, acceleration, deadzone, size, scrolling, inactivity hiding, vibration, and button mapping. Mappable actions also include drag toggle, notifications, screenshot, media play/pause, brightness, and repeat click at a saved location. Brightness access is optional. Repeat click stops with its mapped button, pointer off, screen off, keyboard pass-through, or controller disconnect.
 
-Joystick scrolling uses a continued virtual-finger touch in 32 ms segments. Stick deflection controls speed through a radial deadzone and short smoothing ramp. Returning to neutral stops movement, then lifts after a brief stationary interval to reduce unwanted flings. At the edge of the detected scrollable container the touch settles, lifts, and re-anchors inside that container. This still uses touch gestures, so a brief reset can occur at its boundaries; it is not native mouse-wheel injection. Scroll bounds are clipped away from a visible keyboard when the cursor is outside it.
+Joystick scrolling drags a virtual finger. Stick deflection sets the speed through a radial deadzone and a short smoothing ramp. Holding the stick scrolls continuously:
+
+- **No gaps between segments.** Each segment is one display frame long, and about 40 ms of movement stays queued. Android then joins each stroke directly to the previous one.
+- **Controller input no longer stops the scroll.** On Android 14 and 15, every controller event that reaches an accessibility service cancels the injected touch (`MotionEventInjector.onMotionEvent`). Holding a stick can produce a steady stream of these events. PadPointer now places a new finger within about a millisecond and moves it past touch slop at once, keeping the current speed. Apps drop the slop distance from the first drag delta, so the content continues without a pause or a jump.
+- **Container edges no longer pause the scroll.** When the finger runs out of room, a new finger goes down at the far side and the old one is cancelled, without a lift or fling.
+
+If a cancellation arrives with no controller input, such as a real finger on the screen, scrolling stops instead of fighting that touch. Returning the stick to neutral eases out over a few frames, then holds still before lifting so apps add no fling. The re-gripping finger stays in the scrollable container under the cursor and re-reads its bounds as toolbars collapse. It stays clear of a visible keyboard when the cursor is outside it. This still uses touch gestures, not native mouse-wheel injection.
 
 Clicks and mapped actions end an active scroll touch first. After a mapped button interrupts scrolling, return the right stick to neutral before starting another scroll. **Scroll speed** still controls the overall rate.
 
@@ -71,7 +77,18 @@ Output: `app/build/outputs/apk/debug/app-debug.apk`. The supplied APK is a debug
 
 ## Verification status
 
-Debug build, 13 unit tests, Android lint, and APK signature verification passed. The release includes `validation.txt` with the warnings; there are no lint errors. Unit tests cover noisy sticks, diagonal speed, acceleration, invalid data, screen bounds, continuous scroll segments, stops, reversals, container boundaries, proportional speed, interruption, and touch slop. They do not establish runtime scrolling or keyboard behavior.
+Debug build, 25 unit tests, Android lint, and APK signature verification passed. The release includes `validation.txt` with the warnings; there are no lint errors. Unit tests cover noisy sticks, diagonal speed, acceleration, invalid data, screen bounds, scroll planning, stops, reversals, container edges, proportional speed, interruption, and touch slop.
+
+`ScrollDriverTest` holds the stick against `InjectorSimulation`, a model of Android's gesture injector based on the AOSP android14-release source. The model includes frame sampling, whole-pixel continuation checks, queued scheduling, cancellation from controller events, and fresh-gesture cancels. It renders through a RecyclerView-style scroller with touch-slop handling and touch resampling. Over 6 s of holding at 60 Hz, the model gives these results:
+
+| Case | 0.2.2 still frames | 0.2.3 still frames | 0.2.3 speed |
+| --- | --- | --- | --- |
+| No cancellations (quiet stick, or Android 16 with the injector fix) | 11% (117 ms stops at edges) | 0% | 100% |
+| A controller event every 120 ms (Android 14–15) | 42% | 0% | 100% |
+| A controller event every 30 ms | 88% | 0.9% (never two frames in a row) | 100% |
+| A controller event every 8 ms | 99.7% (nearly frozen) | 1.5% (never two frames in a row) | 99% |
+
+These are model results, not device measurements. Very noisy sticks still make motion slightly uneven, because each cancellation restarts the finger.
 
 Runtime testing was blocked by the Device panel error: **Android emulator video needs the libx264 encoder.** The host's FFmpeg has no libx264 encoder. No app launch, keyboard result, or physical-controller result is claimed. A test AVD named `PadPointer_API35` was created and remains available after the host codec issue is fixed.
 
