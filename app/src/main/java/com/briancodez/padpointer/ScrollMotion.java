@@ -48,7 +48,10 @@ final class ScrollMotion {
     ScrollMotion(Area area, float cursorX, float cursorY, float touchSlop, int sampleMs) {
         this.area = area;
         this.sampleMs = Math.max(1, sampleMs);
-        segmentMs = this.sampleMs * Math.max(1, Math.round(16f / this.sampleMs));
+        // One injector sample per segment: every delivered move then has a completion callback.
+        // Multi-sample segments left Firefox recovery one frame behind when a controller update
+        // cancelled the finger halfway through a segment on 120/144 Hz screens.
+        segmentMs = this.sampleMs;
         lookahead = Math.max(2, (int) Math.ceil(LOOKAHEAD_MS / (double) segmentMs));
         slop = Math.max(1, touchSlop);
         minimumSpeed = slop * 6; // Crosses slop well before a long-press, even just outside the deadzone.
@@ -148,7 +151,14 @@ final class ScrollMotion {
         float stepX = velocityX * segmentMs / 1000f, stepY = velocityY * segmentMs / 1000f;
         if (!moving && Math.hypot(stepX, stepY) < 1) { velocityX = velocityY = 0; return lift(); }
         float nextX = idealX + stepX, nextY = idealY + stepY;
-        if (!area.contains(nextX, nextY)) {
+        // Leave enough room to finish a recently restarted Firefox touch past its tap tolerance.
+        // Otherwise a cancellation just before the edge could turn the following UP into a click.
+        float reserve = gecko() ? geckoTolerance + 2 : 0;
+        boolean nearEdge = gecko() && ((stepX < 0 && nextX < area.left + reserve)
+                || (stepX > 0 && nextX > area.right - reserve)
+                || (stepY < 0 && nextY < area.top + reserve)
+                || (stepY > 0 && nextY > area.bottom - reserve));
+        if (!area.contains(nextX, nextY) || nearEdge) {
             if (moving) {
                 // Firefox would mistake a replacement finger for this one jumping, so lift it properly (still moving,
                 // so the page flings on for the few milliseconds until the next finger lands).
@@ -214,6 +224,15 @@ final class ScrollMotion {
 
     /** Lifts the finger while it is still moving; a new finger follows (not the end of the scroll). */
     private Segment liftMoving(float nextX, float nextY) {
+        if (travel <= geckoTolerance) {
+            float dx = nextX - lastX, dy = nextY - lastY;
+            float distance = (float) Math.hypot(dx, dy);
+            float need = geckoTolerance + 1 - travel;
+            if (distance > 0 && distance < need) {
+                nextX = lastX + dx / distance * need;
+                nextY = lastY + dy / distance * need;
+            }
+        }
         int toX = Math.max(0, Math.round(nextX)), toY = Math.max(0, Math.round(nextY));
         if (toX == lastX && toY == lastY) toY += lastDirY >= 0 ? 1 : -1;
         Segment segment = new Segment(lastX, lastY, toX, toY, segmentMs, false, false);

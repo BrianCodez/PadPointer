@@ -94,6 +94,17 @@ public class ScrollDriverTest {
         assertEquals("" + held, 0, held.still);
     }
 
+    @Test public void boundsRefreshesAreRequestedWhileTheFingerIsMovingBeforeAnEdge() {
+        InjectorSimulation sim = new InjectorSimulation();
+        sim.stickEventsCancelTouches = false;
+        sim.stick(0, 0, 1);
+        sim.startScroll(5, 540, 1200);
+        sim.run(1000);
+        assertEquals("The original finger is still moving", 1, sim.downs);
+        assertEquals("Refresh proactively without waiting for a re-grip", 3, sim.areaRefreshes);
+        assertEquals("Refreshing does not lift the finger", 0, sim.ups);
+    }
+
     @Test public void clickWhileScrollingStopsTheContentWithoutAFling() {
         InjectorSimulation sim = new InjectorSimulation();
         sim.stickEventsCancelTouches = false;
@@ -176,6 +187,20 @@ public class ScrollDriverTest {
                 assertTrue("backward " + (sim.backwardPx - before), sim.backwardPx - before < 3);
                 assertEquals(0, sim.taps);
             } else assertTrue("0.2.4 jumped back here", sim.backwardPx - before > 500);
+        }
+    }
+
+    @Test public void firefoxHighRefreshInterruptionsDoNotRetraceUnreportedMoves() {
+        for (int hz : new int[]{120, 144, 90}) {
+            InjectorSimulation sim = new InjectorSimulation();
+            sim.firefox = true;
+            sim.frameMs = 1000.0 / hz; sim.sampleMs = (int) sim.frameMs;
+            sim.stickEventEveryMs = 60;
+            Stats held = hold(sim, "Firefox " + hz + " Hz, controller event every 60 ms");
+            assertTrue("No backwards correction at " + hz + " Hz: " + sim.backwardPx, sim.backwardPx < 3);
+            assertEquals("No unintended taps", 0, sim.taps);
+            assertEquals(target(sim), held.mean, target(sim) * 0.12);
+            assertTrue("No long pauses: " + held, held.longestStill <= 2);
         }
     }
 

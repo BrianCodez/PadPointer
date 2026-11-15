@@ -23,7 +23,7 @@ final class ScrollDriver {
         boolean stickHeld();
         /** A click, action, or mode change must end scrolling now. */
         boolean blocked();
-        /** Current bounds of the container being scrolled, or null to keep the previous ones. */
+        /** Latest cached bounds, or null to keep the previous ones. Must not block on another app. */
         ScrollMotion.Area refreshArea();
         long now();
         /** The session is over. If {@code forgetStick}, ignore the stick until it reports a new position. */
@@ -85,12 +85,8 @@ final class ScrollDriver {
             if (motion.gecko() && deliveredX >= 0) host.staleTouch(deliveredX, deliveredY);
             if (!motion.ended()) {
                 long now = host.now();
-                if (lastMoveAt >= 0) {
-                    // Moves of the interrupted segment that already reached the app (segments span several frames
-                    // on high refresh-rate displays).
-                    long delivered = (now - lastMoveAt) / motion.sampleMs * motion.sampleMs;
-                    lastMoveAt += Math.min(delivered, motion.segmentMs - motion.sampleMs);
-                }
+                // Each movement segment contains exactly one injector sample, so completed() has
+                // recorded every previous move; there is no unreported middle-of-segment position.
                 motion.lost();
                 cancelledAt = now;
             }
@@ -104,6 +100,10 @@ final class ScrollDriver {
     void feed() {
         while (motion != null) {
             long now = host.now();
+            if (now - areaAt >= AREA_REFRESH_MS) {
+                motion.setArea(host.refreshArea());
+                areaAt = now;
+            }
             boolean blocked = host.blocked();
             boolean requested = !blocked && host.stickHeld();
             if (motion.ended()) { if (inFlight == 0) finish(false); return; }
@@ -136,7 +136,6 @@ final class ScrollDriver {
     }
 
     private boolean grip(long now, boolean urgent) {
-        if (now - areaAt >= AREA_REFRESH_MS) { motion.setArea(host.refreshArea()); areaAt = now; }
         int since = lastMoveAt < 0 ? -1 : (int) Math.min(Integer.MAX_VALUE, now - lastMoveAt);
         // Firefox still pans from where it last saw a cancelled finger; a new finger anywhere else makes it jump.
         int[] stale = !motion.gecko() ? null : urgent && deliveredX >= 0 ? new int[]{deliveredX, deliveredY}

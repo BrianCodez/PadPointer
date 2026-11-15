@@ -52,6 +52,7 @@ final class InjectorSimulation implements ScrollDriver.Host {
     int downs, ups, cancels, flings, rejectedContinuations, emptySegments, endedCount;
     /** Firefox: touches it treats as taps (page clicks), and content movement against the scroll direction. */
     int taps;
+    int areaRefreshes;
     double backwardPx;
     boolean lastEndForgotStick;
     double lastMoveTime = -1;
@@ -152,7 +153,7 @@ final class InjectorSimulation implements ScrollDriver.Host {
     @Override public float speed() { return speed; }
     @Override public boolean stickHeld() { return Math.hypot(stickX, stickY) > deadzone; }
     @Override public boolean blocked() { return blockedFlag; }
-    @Override public ScrollMotion.Area refreshArea() { return area; }
+    @Override public ScrollMotion.Area refreshArea() { areaRefreshes++; return area; }
     @Override public long now() { return (long) Math.floor(now); }
     @Override public void ended(boolean forgetStick) { endedCount++; lastEndForgotStick = forgetStick; }
     private int[] stale;

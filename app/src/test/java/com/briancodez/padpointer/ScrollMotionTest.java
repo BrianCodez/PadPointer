@@ -13,8 +13,8 @@ public class ScrollMotionTest {
         return motion;
     }
 
-    @Test public void segmentsAreWholeInjectorFramesNearSixteenMilliseconds() {
-        int[][] cases = {{16, 16}, {11, 11}, {8, 16}, {6, 18}, {4, 16}, {33, 33}};
+    @Test public void eachSegmentHasOneInjectorSampleSoCancellationRecoveryKnowsEveryMove() {
+        int[][] cases = {{16, 16}, {11, 11}, {8, 8}, {6, 6}, {4, 4}, {33, 33}};
         for (int[] c : cases) {
             ScrollMotion motion = new ScrollMotion(AREA, 500, 1000, SLOP, c[0]);
             assertEquals(c[1], motion.segmentMs);
@@ -167,6 +167,27 @@ public class ScrollMotionTest {
         ScrollMotion.Segment lift = motion.next(0, 1, DEAD, SPEED, false, true);
         assertFalse(lift.keepDown());
         assertEquals(lift.fromY(), lift.toY());
+    }
+
+    @Test public void firefoxInterruptedNearAnEdgeFinishesDraggingInsideTheContainerBeforeLifting() {
+        for (int sample : new int[]{16, 11, 8, 6}) {
+            for (int direction : new int[]{-1, 1}) {
+                ScrollMotion.Area small = new ScrollMotion.Area(100, 200, 400, 600);
+                ScrollMotion motion = new ScrollMotion(small, 250, 400, SLOP, sample);
+                motion.setGecko(28);
+                int start = direction > 0 ? 235 : 565;
+                motion.gripInPlace(250, start, 0, direction, DEAD, SPEED, 2);
+                ScrollMotion.Segment end;
+                int count = 0;
+                do {
+                    end = motion.next(0, direction, DEAD, SPEED, true, false);
+                    assertNotNull(end);
+                    assertTrue("Finish within the container", small.contains(end.toX(), end.toY()));
+                    assertTrue(++count < 20);
+                } while (end.keepDown());
+                assertTrue("The lift must not be recognized as a tap", Math.abs(end.toY() - start) > 28);
+            }
+        }
     }
 
     @Test public void noiseAndInvalidAxesStopScrolling() {

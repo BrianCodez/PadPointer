@@ -24,4 +24,6 @@ Run these on Android 14 or newer with a physical controller. The APK has built-i
 
 19. In Firefox (and another GeckoView browser if available), hold the right stick down on a long article for 10 seconds, still and then partly deflected. The page must never jump back, zoom, or open a link. Let go, scroll again at once, then press A on a link: the link must open.
 
+20. Compare 0.2.5 and 0.2.6 at 60 Hz and at the phone's higher refresh rate (90/120/144 Hz). In Firefox, hold a partly deflected stick for 10 seconds in each direction and cross several virtual-finger re-grips. Watch for tiny backward corrections, pauses, and unintended link activation. Repeat under a collapsing toolbar and in a nested scroll area. While a target app is slow, verify that scrolling continues and that returning to PadPointer or switching apps does not apply old container bounds to the new session.
+
 Record device model, Android version, controller model/transport, selected keyboard/version, affected app/version, result, and any relevant `dumpsys input_method`, window-focus, and crash logs. Never collect field contents or passwords for a test report.

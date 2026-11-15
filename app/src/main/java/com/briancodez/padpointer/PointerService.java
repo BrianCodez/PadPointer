@@ -70,6 +70,11 @@ public final class PointerService extends AccessibilityService implements Shared
     /** Newest stroke of the scrolling finger, which the next segment continues. */
     private GestureDescription.StrokeDescription scrollStroke;
     private AccessibilityNodeInfo scrollNode;
+    // A target app may take hundreds of milliseconds to answer a node refresh. Never make the
+    // gesture callback thread wait for it. Keep just one request outstanding and reject old results.
+    private final java.util.concurrent.ExecutorService scrollBoundsWorker = java.util.concurrent.Executors.newSingleThreadExecutor();
+    private boolean scrollBoundsPending;
+    private ScrollMotion.Area cachedScrollArea;
     /** App being scrolled, and where a Firefox-engine app still believes a cancelled finger is down. */
     private String scrollPackage, stalePackage;
     private int[] staleTouch;
@@ -92,7 +97,7 @@ public final class PointerService extends AccessibilityService implements Shared
             return staleTouch != null && scrollPackage != null && scrollPackage.equals(stalePackage) ? staleTouch : null;
         }
         @Override public void ended(boolean forgetStick) {
-            scrollStroke = null; scrollNode = null;
+            scrollStroke = null; scrollNode = null; cachedScrollArea = null;
             if (forgetStick) scrollX = scrollY = 0;
             if (!destroyed) pump();
         }
@@ -462,7 +467,7 @@ public final class PointerService extends AccessibilityService implements Shared
     }
     private ScrollMotion.Area scrollArea() {
         Rect bounds = new Rect(0, 0, (int) width, (int) height);
-        scrollNode = null; scrollWindow = null; scrollKeyboard = null; scrollPackage = null;
+        scrollNode = null; scrollWindow = null; scrollKeyboard = null; scrollPackage = null; cachedScrollArea = null;
         java.util.List<AccessibilityWindowInfo> visibleWindows = getWindows();
         for (AccessibilityWindowInfo window : visibleWindows) {
             if (window.getType() == AccessibilityWindowInfo.TYPE_INPUT_METHOD) {
@@ -487,12 +492,35 @@ public final class PointerService extends AccessibilityService implements Shared
         }
         return areaFor(bounds);
     }
-    /** The container can move while scrolling (collapsing toolbars, browser bars); re-read it before re-gripping. */
+    /** Refresh in the background while queued gestures keep moving; expose only the last completed result. */
     private ScrollMotion.Area refreshScrollArea() {
-        if (scrollNode == null || !scrollNode.refresh()) return null;
-        Rect bounds = new Rect(); scrollNode.getBoundsInScreen(bounds);
-        if (scrollWindow != null && !bounds.intersect(scrollWindow)) return null;
-        return bounds.width() > 2 && bounds.height() > 2 ? areaFor(bounds) : null;
+        if (scrollNode != null && !scrollBoundsPending && !destroyed) {
+            AccessibilityNodeInfo expected = scrollNode;
+            AccessibilityNodeInfo copy = AccessibilityNodeInfo.obtain(expected);
+            scrollBoundsPending = true;
+            scrollBoundsWorker.execute(() -> {
+                Rect bounds = new Rect();
+                boolean refreshed;
+                try {
+                    refreshed = copy.refresh();
+                    if (refreshed) copy.getBoundsInScreen(bounds);
+                } catch (IllegalStateException unavailable) {
+                    refreshed = false;
+                } finally {
+                    copy.recycle();
+                }
+                boolean valid = refreshed && bounds.width() > 2 && bounds.height() > 2;
+                handler.post(() -> {
+                    scrollBoundsPending = false;
+                    // A new session/app can start before the previous app answers.
+                    if (!destroyed && scrollNode == expected && valid
+                            && (scrollWindow == null || bounds.intersect(scrollWindow))) {
+                        cachedScrollArea = areaFor(bounds);
+                    }
+                });
+            });
+        }
+        return cachedScrollArea;
     }
     private ScrollMotion.Area areaFor(Rect bounds) {
         if (!bounds.intersect(0, 0, (int) width, (int) height)) bounds.set(0, 0, (int) width, (int) height);
@@ -570,6 +598,7 @@ public final class PointerService extends AccessibilityService implements Shared
     @Override public void onDestroy() {
         destroyed = true; connected = false;
         scroller.abandon();
+        scrollBoundsWorker.shutdownNow();
         handler.removeCallbacksAndMessages(null);
         if (prefs != null) prefs.data.unregisterOnSharedPreferenceChangeListener(this);
         if (inputs != null) inputs.unregisterInputDeviceListener(this);
