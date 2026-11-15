@@ -36,7 +36,7 @@ Settings include speed, acceleration, deadzone, size, scrolling, inactivity hidi
 Joystick scrolling drags a virtual finger. Stick deflection sets the speed through a radial deadzone and a short smoothing ramp. Holding the stick scrolls continuously:
 
 - **No gaps between segments.** Each segment is one display frame long, and about 40 ms of movement stays queued. Android then joins each stroke directly to the previous one.
-- **Controller input no longer stops the scroll.** On Android 14 and 15, every controller event that reaches an accessibility service cancels the injected touch (`MotionEventInjector.onMotionEvent`). Holding a stick can produce a steady stream of these events. PadPointer now places a new finger within about a millisecond and moves it past touch slop at once, keeping the current speed. Apps drop the slop distance from the first drag delta, so the content continues without a pause or a jump.
+- **Controller input no longer stops the scroll.** On Android 14 and 15, every controller event that reaches an accessibility service cancels the injected touch (`MotionEventInjector.onMotionEvent`). Holding a stick can produce a steady stream of these events. PadPointer now places a new finger within about a millisecond and moves it past touch slop at once, keeping the current speed. Apps drop the slop distance from the first drag delta, so the content usually resumes within a frame or two. Very frequent controller events still make it choppy; see the known limitations under **Verification status**.
 - **Container edges no longer pause the scroll.** When the finger runs out of room, a new finger goes down at the far side and the old one is cancelled, without a lift or fling.
 
 If a cancellation arrives with no controller input, such as a real finger on the screen, scrolling stops instead of fighting that touch. Returning the stick to neutral eases out over a few frames, then holds still before lifting so apps add no fling. The re-gripping finger stays in the scrollable container under the cursor and re-reads its bounds as toolbars collapse. It stays clear of a visible keyboard when the cursor is outside it. This still uses touch gestures, not native mouse-wheel injection.
@@ -79,18 +79,24 @@ Output: `app/build/outputs/apk/debug/app-debug.apk`. The supplied APK is a debug
 
 Debug build, 25 unit tests, Android lint, and APK signature verification passed. The release includes `validation.txt` with the warnings; there are no lint errors. Unit tests cover noisy sticks, diagonal speed, acceleration, invalid data, screen bounds, scroll planning, stops, reversals, container edges, proportional speed, interruption, and touch slop.
 
-`ScrollDriverTest` holds the stick against `InjectorSimulation`, a model of Android's gesture injector based on the AOSP android14-release source. The model includes frame sampling, whole-pixel continuation checks, queued scheduling, cancellation from controller events, and fresh-gesture cancels. It renders through a RecyclerView-style scroller with touch-slop handling and touch resampling. Over 6 s of holding at 60 Hz, the model gives these results:
+`ScrollDriverTest` holds the stick against `InjectorSimulation`, a model of Android's gesture injector based on the AOSP android14-release source.
 
-| Case | 0.2.2 still frames | 0.2.3 still frames | 0.2.3 speed |
-| --- | --- | --- | --- |
-| No cancellations (quiet stick, or Android 16 with the injector fix) | 11% (117 ms stops at edges) | 0% | 100% |
-| A controller event every 120 ms (Android 14–15) | 42% | 0% | 100% |
-| A controller event every 30 ms | 88% | 0.9% (never two frames in a row) | 100% |
-| A controller event every 8 ms | 99.7% (nearly frozen) | 1.5% (never two frames in a row) | 99% |
+### Emulator measurements (Android 15)
 
-These are model results, not device measurements. Very noisy sticks still make motion slightly uneven, because each cancellation restarts the finger.
+Scrolling was measured on an Android 15 emulator (API 35, 60 Hz) in Settings › Apps › All apps. A virtual uinput gamepad held the right stick fully down for 5 s, once still and once with random ±1% jitter at set intervals. The screen was recorded, and list movement was measured per frame. On Android 14–15, every jitter event cancels the injected touch.
 
-Runtime testing was blocked by the Device panel error: **Android emulator video needs the libx264 encoder.** The host's FFmpeg has no libx264 encoder. No app launch, keyboard result, or physical-controller result is claimed. A test AVD named `PadPointer_API35` was created and remains available after the host codec issue is fixed.
+| Stick | 0.2.2 | 0.2.3 |
+| --- | --- | --- |
+| Held still | Stops up to 117 ms at container edges; 87% speed | No stop longer than 2 frames (33 ms); 99% speed |
+| Jitter every 120 ms | Stops up to 300 ms; 28% speed | No stop longer than 2 frames; 94–95% speed |
+| Jitter every 30 ms | Frozen | No stop longer than 2 frames; 92% speed |
+| Jitter every 8 ms (extreme) | Frozen | Choppy: about 330 px/s, stops up to 183 ms |
+
+About 10% of frames show no movement even in the best runs, which is emulator rendering/recording jitter. No unintended taps occurred.
+
+Known limitations on Android 14–15 with a stick that keeps reporting small changes:
+- Very frequent controller events, every few milliseconds, still make scrolling choppy. Each one cancels the touch, and Android discards moves the app has not consumed yet.
+- At the top of a page with a snapping collapsing header, such as Settings, frequent controller events can keep the header snapping back open, so the page stays put. A still stick (for example, pushed fully against its edge) collapses it normally.
 
 Device acceptance checks are in [DEVICE-TESTS.md](DEVICE-TESTS.md). Static findings and source evidence are in [RESEARCH.md](RESEARCH.md).
 
