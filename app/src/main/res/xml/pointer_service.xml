@@ -4,7 +4,7 @@
     android:settingsActivity="com.briancodez.padpointer.MainActivity"
     android:accessibilityEventTypes="typeWindowStateChanged|typeWindowsChanged"
     android:accessibilityFeedbackType="feedbackGeneric"
-    android:accessibilityFlags="flagRequestFilterKeyEvents|flagRetrieveInteractiveWindows|flagRequestAccessibilityButton"
+    android:accessibilityFlags="flagRequestFilterKeyEvents|flagRetrieveInteractiveWindows"
     android:notificationTimeout="50"
     android:canRequestFilterKeyEvents="true"
     android:canRetrieveWindowContent="true"

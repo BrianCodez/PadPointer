@@ -107,9 +107,6 @@ public final class PointerService extends AccessibilityService implements Shared
         cursorParams.setFitInsetsTypes(0);
         windows.addView(cursor, cursorParams);
         cursor.setVisibility(View.INVISIBLE);
-        getAccessibilityButtonController().registerAccessibilityButtonCallback(new android.accessibilityservice.AccessibilityButtonController.AccessibilityButtonCallback() {
-            @Override public void onClicked(android.accessibilityservice.AccessibilityButtonController controller) { toggle(); }
-        });
         prefs.data.registerOnSharedPreferenceChangeListener(this);
         inputs = (InputManager) getSystemService(INPUT_SERVICE);
         inputs.registerInputDeviceListener(this, handler);
