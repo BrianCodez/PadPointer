@@ -22,4 +22,6 @@ Run these on Android 14 or newer with a physical controller. The APK has built-i
 
 18. Under **Pointer on / off**, set a combination such as L1 + R1. With the pointer off in a game, press each button alone and confirm the game receives it. Press both in either order: the pointer turns on, and the game receives only the first. With the pointer on, press L1 alone: its mapped action runs after a short delay. Press L1 + R1: the pointer turns off and neither volume action runs. Confirm L3 no longer toggles, then set a single button and **Reset to L3**. Try a three-button combination and one that includes R3. R3 alone must be refused.
 
+19. In Firefox (and another GeckoView browser if available), hold the right stick down on a long article for 10 seconds, still and then partly deflected. The page must never jump back, zoom, or open a link. Let go, scroll again at once, then press A on a link: the link must open.
+
 Record device model, Android version, controller model/transport, selected keyboard/version, affected app/version, result, and any relevant `dumpsys input_method`, window-focus, and crash logs. Never collect field contents or passwords for a test report.

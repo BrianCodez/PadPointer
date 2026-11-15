@@ -8,6 +8,9 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
+import android.content.pm.PackageInfo;
+import android.content.pm.PackageManager;
+import android.content.pm.ServiceInfo;
 import android.content.res.Configuration;
 import android.graphics.Path;
 import android.graphics.PixelFormat;
@@ -67,6 +70,10 @@ public final class PointerService extends AccessibilityService implements Shared
     /** Newest stroke of the scrolling finger, which the next segment continues. */
     private GestureDescription.StrokeDescription scrollStroke;
     private AccessibilityNodeInfo scrollNode;
+    /** App being scrolled, and where a Firefox-engine app still believes a cancelled finger is down. */
+    private String scrollPackage, stalePackage;
+    private int[] staleTouch;
+    private final java.util.HashMap<String, Boolean> geckoApps = new java.util.HashMap<>();
     private Rect scrollWindow, scrollKeyboard;
     private float scrollOriginX, scrollOriginY;
     private final ScrollDriver scroller = new ScrollDriver(new ScrollDriver.Host() {
@@ -79,6 +86,11 @@ public final class PointerService extends AccessibilityService implements Shared
         @Override public boolean blocked() { return scrollBlocked(); }
         @Override public ScrollMotion.Area refreshArea() { return refreshScrollArea(); }
         @Override public long now() { return SystemClock.uptimeMillis(); }
+        @Override public void staleTouch(int x, int y) { staleTouch = new int[]{x, y}; stalePackage = scrollPackage; }
+        @Override public void touchEnded() { staleTouch = null; }
+        @Override public int[] staleTouch() {
+            return staleTouch != null && scrollPackage != null && scrollPackage.equals(stalePackage) ? staleTouch : null;
+        }
         @Override public void ended(boolean forgetStick) {
             scrollStroke = null; scrollNode = null;
             if (forgetStick) scrollX = scrollY = 0;
@@ -382,6 +394,7 @@ public final class PointerService extends AccessibilityService implements Shared
         if (!gestures.isEmpty()) dispatch(gestures.remove(), null);
     }
     private void dispatch(GestureDescription gesture, GestureDescription.StrokeDescription nextStroke) {
+        staleTouch = null; // a tap or drag ends any touch Firefox was still holding on to
         inFlight++;
         boolean accepted = dispatchGesture(gesture, new GestureResultCallback() {
             @Override public void onCompleted(GestureDescription completed) {
@@ -420,7 +433,9 @@ public final class PointerService extends AccessibilityService implements Shared
     private boolean scrollRequested() { return !busy() && !scrollBlocked() && scrollStickHeld(); }
     private void startScroll() {
         scrollOriginX = x; scrollOriginY = y;
-        scroller.start(new ScrollMotion(scrollArea(), x, y, ViewConfiguration.get(this).getScaledTouchSlop(), gestureSampleMs()));
+        ScrollMotion motion = new ScrollMotion(scrollArea(), x, y, ViewConfiguration.get(this).getScaledTouchSlop(), gestureSampleMs());
+        if (isGeckoApp(scrollPackage)) motion.setGecko(geckoTolerancePx());
+        scroller.start(motion);
     }
     /** Android samples injected gestures once per display frame; matching it keeps touch events evenly spaced. */
     private int gestureSampleMs() {
@@ -438,7 +453,7 @@ public final class PointerService extends AccessibilityService implements Shared
         scrollStroke = segment.keepDown() ? next : null;
         inFlight++;
         boolean accepted = dispatchGesture(onDisplay(new GestureDescription.Builder().addStroke(next)).build(), new GestureResultCallback() {
-            @Override public void onCompleted(GestureDescription completed) { inFlight--; if (!destroyed) scroller.completed(epoch); }
+            @Override public void onCompleted(GestureDescription completed) { inFlight--; if (!destroyed) scroller.completed(epoch, segment); }
             @Override public void onCancelled(GestureDescription cancelled) { inFlight--; if (!destroyed) scroller.cancelled(epoch); }
         }, handler);
         if (!accepted) { inFlight--; scrollStroke = null; }
@@ -447,7 +462,7 @@ public final class PointerService extends AccessibilityService implements Shared
     }
     private ScrollMotion.Area scrollArea() {
         Rect bounds = new Rect(0, 0, (int) width, (int) height);
-        scrollNode = null; scrollWindow = null; scrollKeyboard = null;
+        scrollNode = null; scrollWindow = null; scrollKeyboard = null; scrollPackage = null;
         java.util.List<AccessibilityWindowInfo> visibleWindows = getWindows();
         for (AccessibilityWindowInfo window : visibleWindows) {
             if (window.getType() == AccessibilityWindowInfo.TYPE_INPUT_METHOD) {
@@ -462,6 +477,7 @@ public final class PointerService extends AccessibilityService implements Shared
             scrollWindow = windowBounds;
             bounds.set(windowBounds);
             AccessibilityNodeInfo root = window.getRoot();
+            if (root != null && root.getPackageName() != null) scrollPackage = root.getPackageName().toString();
             if (root != null) scrollNode = findScrollable(root, new int[]{512});
             if (scrollNode != null) {
                 scrollNode.getBoundsInScreen(bounds);
@@ -493,6 +509,24 @@ public final class PointerService extends AccessibilityService implements Shared
         float insetY = Math.min(12 * getResources().getDisplayMetrics().density, Math.max(0, (bounds.height() - 2) / 4f));
         return new ScrollMotion.Area(bounds.left + insetX, bounds.top + insetY, bounds.right - 1 - insetX, bounds.bottom - 1 - insetY);
     }
+    /**
+     * Firefox and other GeckoView apps ignore the cancel Android sends when it replaces an injected finger, so they
+     * need in-place re-grips (see ScrollMotion). They are recognized by GeckoView's content-process services.
+     */
+    private boolean isGeckoApp(String packageName) {
+        if (packageName == null) return false;
+        return geckoApps.computeIfAbsent(packageName, name -> {
+            try {
+                PackageInfo info = getPackageManager().getPackageInfo(name, PackageManager.GET_SERVICES);
+                if (info.services != null) {
+                    for (ServiceInfo service : info.services) if (service.name.startsWith("org.mozilla.gecko.")) return true;
+                }
+            } catch (PackageManager.NameNotFoundException hidden) { /* not visible to PadPointer */ }
+            return name.startsWith("org.mozilla.");
+        });
+    }
+    /** Firefox for Android starts panning (and stops treating a touch as a tap) after 0.06 inch. */
+    private int geckoTolerancePx() { return (int) Math.ceil(0.06f * getResources().getDisplayMetrics().densityDpi) + 2; }
     /** Deepest scrollable node under the cursor. */
     private AccessibilityNodeInfo findScrollable(AccessibilityNodeInfo node, int[] budget) {
         if (budget[0]-- <= 0) return null;

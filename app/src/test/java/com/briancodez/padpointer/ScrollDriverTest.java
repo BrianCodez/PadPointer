@@ -36,7 +36,7 @@ public class ScrollDriverTest {
         System.out.println(label + ": " + held + " grips=" + sim.driver.grips() + " downs=" + sim.downs + " cancels=" + sim.cancels
                 + " ups=" + sim.ups + " flings=" + sim.flings + " rejected=" + sim.rejectedContinuations);
         assertFalse("Scrolling ends after release", sim.driver.active());
-        assertEquals("No fling after release", 0, sim.flings);
+        if (!sim.firefox) assertEquals("No fling after release", 0, sim.flings); // Firefox edges lift while moving
         assertEquals("No empty segments", 0, sim.emptySegments);
         assertTrue("Content stops promptly after release", sim.lastMoveTime < RELEASE + 200);
         assertEquals(0, sim.driver.inFlight());
@@ -121,6 +121,62 @@ public class ScrollDriverTest {
         assertFalse("A real touch took over", sim.driver.active());
         assertTrue(sim.lastEndForgotStick);
         assertEquals("No new finger fights the real one", grips, sim.driver.grips());
+    }
+
+    @Test public void firefoxWithout0_2_5HandlingJumpsBackAtEveryEdge() {
+        // What 0.2.4 did on the Android 15 emulator: each new finger made Firefox jump back by a finger's travel.
+        InjectorSimulation sim = new InjectorSimulation();
+        sim.firefox = true; sim.plannerKnowsFirefox = false; sim.stickEventsCancelTouches = false;
+        sim.stick(0, 0, 1);
+        sim.startScroll(5, 540, 1200);
+        sim.run(6000);
+        assertTrue("backward " + sim.backwardPx, sim.backwardPx > 3000);
+    }
+
+    @Test public void firefoxHeldStickScrollsWithoutJumpsOrTaps() {
+        InjectorSimulation sim = new InjectorSimulation();
+        sim.firefox = true; sim.stickEventsCancelTouches = false;
+        Stats held = hold(sim, "Firefox, no cancels");
+        assertTrue("backward " + sim.backwardPx, sim.backwardPx < 3);
+        assertEquals("Nothing on the page was tapped", 0, sim.taps);
+        assertTrue("Container edges were crossed", sim.driver.grips() >= 4);
+        assertTrue("" + held, held.longestStill <= 3);
+        assertEquals(target(sim), held.mean, target(sim) * 0.12);
+    }
+
+    @Test public void firefoxWithControllerEventsKeepsPanningInPlace() {
+        InjectorSimulation sim = new InjectorSimulation();
+        sim.firefox = true;
+        sim.stickEventEveryMs = 60;
+        Stats held = hold(sim, "Firefox, controller event every 60 ms");
+        assertTrue("Many cancels that Firefox never saw", sim.cancels > 50);
+        assertTrue("backward " + sim.backwardPx, sim.backwardPx < 3);
+        assertEquals(0, sim.taps);
+        assertTrue("" + held, held.longestStill <= 2);
+        assertEquals(target(sim), held.mean, target(sim) * 0.12);
+    }
+
+    @Test public void firefoxTouchLeftHangingByAReleaseDoesNotJumpTheNextScroll() {
+        // On Android 14-15 letting go of the stick sends a controller event, which cancels the finger; Firefox
+        // ignores that cancel and still believes the finger is down where it last was.
+        for (boolean fixed : new boolean[]{false, true}) {
+            InjectorSimulation sim = new InjectorSimulation();
+            sim.firefox = true; sim.plannerKnowsFirefox = fixed;
+            sim.stick(0, 0, 1);
+            sim.startScroll(5, 540, 1200);
+            sim.run(900);
+            sim.stick(900, 0, 0);
+            sim.run(1500);
+            assertFalse(sim.driver.active());
+            double before = sim.backwardPx;
+            sim.stick(1500, 0, 1);
+            sim.startScroll(1505, 540, 1200);
+            sim.run(2500);
+            if (fixed) {
+                assertTrue("backward " + (sim.backwardPx - before), sim.backwardPx - before < 3);
+                assertEquals(0, sim.taps);
+            } else assertTrue("0.2.4 jumped back here", sim.backwardPx - before > 500);
+        }
     }
 
     @Test public void stickReleasedDuringRegripStopsCleanly() {

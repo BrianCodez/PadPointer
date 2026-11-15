@@ -5,6 +5,14 @@ package com.briancodez.padpointer;
  *
  * <p>Positions are whole pixels because Android's gesture injector rounds every touch point and only
  * accepts a continued stroke that starts exactly where the previous one ended.
+ *
+ * <p>Firefox-engine apps (GeckoView) need different handling, enabled with {@link #setGecko}. GeckoView discards
+ * the ACTION_CANCEL that Android's injector sends when it replaces or cancels a finger, because that event's down
+ * time is not the finger's. Firefox then still thinks the old finger is panning, ignores the next finger's DOWN,
+ * and pans from where the old finger was: a new finger placed elsewhere makes the page jump. So in Firefox a
+ * replacement finger goes down exactly where the old one was ({@link #gripInPlace}), a finger at the container edge
+ * is lifted properly instead of cancelled, and no finger is lifted before it has moved past Firefox's tap
+ * tolerance, which would otherwise count as a tap.
  */
 final class ScrollMotion {
     /** Stationary time before the final lift, so apps measure no fling velocity (they assume a stop after 40 ms). */
@@ -28,6 +36,10 @@ final class ScrollMotion {
     private float idealX, idealY, velocityX, velocityY;
     private int lastX, lastY;
     private boolean down, ended;
+    /** Firefox's tap/pan tolerance in pixels, or 0 for apps that handle injected cancels normally. */
+    private int geckoTolerance;
+    /** How far the current finger has moved since its DOWN, and in which direction it last moved. */
+    private float travel, lastDirX, lastDirY = -1;
 
     /**
      * @param sampleMs the injector's sampling period (one display frame); segments are whole multiples of it
@@ -47,6 +59,9 @@ final class ScrollMotion {
 
     boolean down() { return down; }
     boolean ended() { return ended; }
+    boolean gecko() { return geckoTolerance > 0; }
+    /** Treat the target as a Firefox-engine app whose tap and pan tolerance is {@code tolerancePx}. */
+    void setGecko(int tolerancePx) { geckoTolerance = Math.max(0, tolerancePx); }
     void setArea(Area area) { if (area != null) this.area = area; }
     /** The current finger was cancelled by Android (for example by the controller's own input events). */
     void lost() { down = false; }
@@ -80,7 +95,9 @@ final class ScrollMotion {
         // The app ignores the first `slop` pixels along the drag axis, then scrolls by the rest.
         boolean alongX = Math.abs(dirX) >= Math.abs(dirY);
         float major = Math.max(Math.abs(dirX), Math.abs(dirY));
-        int majorStep = (int) Math.ceil(slop) + Math.max(1, Math.round(speed * major * elapsed / 1000f));
+        // A Firefox page that was flinging needs its own (larger) tolerance crossed before it pans again.
+        int threshold = Math.max((int) Math.ceil(slop), geckoTolerance);
+        int majorStep = threshold + Math.max(1, Math.round(speed * major * elapsed / 1000f));
         float distance = majorStep / major;
         int fromX = Math.round(anchorX), fromY = Math.round(anchorY);
         int toX = fromX + (alongX ? (dirX >= 0 ? majorStep : -majorStep) : Math.round(dirX * distance));
@@ -89,7 +106,34 @@ final class ScrollMotion {
         toY = (int) clamp(toY, (float) Math.ceil(area.top), (float) Math.floor(area.bottom));
         idealX = toX; idealY = toY; lastX = toX; lastY = toY;
         down = true; ended = false;
+        travel = (float) Math.hypot(toX - fromX, toY - fromY);
+        remember(toX - fromX, toY - fromY);
         return new Segment(fromX, fromY, toX, toY, duration, true, true);
+    }
+
+    /**
+     * Firefox only: places the new finger exactly where Firefox last saw the old one. Firefox ignored the cancel
+     * and keeps panning from that point, so the page continues with no jump and no tolerance to cross.
+     *
+     * @param sinceMoveMs time since that point was delivered, or negative at the start of a scroll
+     */
+    Segment gripInPlace(int x, int y, float inputX, float inputY, float deadzone, float pixelsPerSecond, int sinceMoveMs) {
+        steer(inputX, inputY, deadzone, pixelsPerSecond, true, false);
+        boolean fresh = sinceMoveMs < 0;
+        int duration = fresh ? segmentMs : 1;
+        int elapsed = fresh ? segmentMs : (int) Math.min((long) sinceMoveMs + duration + DISPATCH_LATENCY_MS, 2L * segmentMs);
+        float stepX = velocityX * elapsed / 1000f, stepY = velocityY * elapsed / 1000f;
+        if (Math.hypot(stepX, stepY) < 1) { // always move at least a pixel: the injector rejects an empty stroke
+            float magnitude = (float) Math.hypot(inputX, inputY);
+            stepX = magnitude > 0 ? -inputX / magnitude : 0; stepY = magnitude > 0 ? -inputY / magnitude : -1;
+        }
+        int toX = Math.max(0, Math.round(x + stepX)), toY = Math.max(0, Math.round(y + stepY));
+        if (toX == x && toY == y) toY = y > 0 ? y - 1 : y + 1;
+        idealX = toX; idealY = toY; lastX = toX; lastY = toY;
+        down = true; ended = false;
+        travel = (float) Math.hypot(toX - x, toY - y);
+        remember(toX - x, toY - y);
+        return new Segment(x, y, toX, toY, duration, true, true);
     }
 
     /**
@@ -105,7 +149,11 @@ final class ScrollMotion {
         if (!moving && Math.hypot(stepX, stepY) < 1) { velocityX = velocityY = 0; return lift(); }
         float nextX = idealX + stepX, nextY = idealY + stepY;
         if (!area.contains(nextX, nextY)) {
-            if (moving) return null;
+            if (moving) {
+                // Firefox would mistake a replacement finger for this one jumping, so lift it properly (still moving,
+                // so the page flings on for the few milliseconds until the next finger lands).
+                return gecko() ? liftMoving(nextX, nextY) : null;
+            }
             velocityX = velocityY = 0; return lift(); // The easing tail reached the edge; just stop there.
         }
         int toX = Math.round(nextX), toY = Math.round(nextY);
@@ -116,6 +164,8 @@ final class ScrollMotion {
             nextX = toX; nextY = toY;
         }
         Segment segment = new Segment(lastX, lastY, toX, toY, segmentMs, false, true);
+        travel += (float) Math.hypot(toX - lastX, toY - lastY);
+        remember(toX - lastX, toY - lastY);
         idealX = nextX; idealY = nextY; lastX = toX; lastY = toY;
         return segment;
     }
@@ -144,8 +194,37 @@ final class ScrollMotion {
     }
 
     private Segment lift() {
+        if (geckoTolerance > 0 && travel <= geckoTolerance) {
+            // Firefox would read lifting this finger as a tap on whatever is under it. Move it just past the
+            // tolerance first (in the direction it was going, or back if there is no room), then lift.
+            float need = geckoTolerance + 1 - travel;
+            int toX = Math.round(lastX + lastDirX * need), toY = Math.round(lastY + lastDirY * need);
+            if (!area.contains(toX, toY)) { toX = Math.round(lastX - lastDirX * need); toY = Math.round(lastY - lastDirY * need); }
+            toX = Math.max(0, toX); toY = Math.max(0, toY);
+            travel = geckoTolerance + 1;
+            if (toX != lastX || toY != lastY) {
+                Segment segment = new Segment(lastX, lastY, toX, toY, segmentMs, false, true);
+                idealX = lastX = toX; idealY = lastY = toY;
+                return segment;
+            }
+        }
         down = false; ended = true;
         return new Segment(lastX, lastY, lastX, lastY, STOP_HOLD_MS, false, false);
+    }
+
+    /** Lifts the finger while it is still moving; a new finger follows (not the end of the scroll). */
+    private Segment liftMoving(float nextX, float nextY) {
+        int toX = Math.max(0, Math.round(nextX)), toY = Math.max(0, Math.round(nextY));
+        if (toX == lastX && toY == lastY) toY += lastDirY >= 0 ? 1 : -1;
+        Segment segment = new Segment(lastX, lastY, toX, toY, segmentMs, false, false);
+        idealX = lastX = toX; idealY = lastY = toY;
+        down = false; ended = false;
+        return segment;
+    }
+
+    private void remember(float dx, float dy) {
+        float length = (float) Math.hypot(dx, dy);
+        if (length > 0) { lastDirX = dx / length; lastDirY = dy / length; }
     }
     private static float edge(float low, float high, float direction) {
         float margin = (high - low) * ANCHOR_MARGIN;

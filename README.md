@@ -41,6 +41,8 @@ Joystick scrolling drags a virtual finger. Stick deflection sets the speed throu
 - **Controller input no longer stops the scroll.** On Android 14 and 15, every controller event that reaches an accessibility service cancels the injected touch (`MotionEventInjector.onMotionEvent`). Holding a stick can produce a steady stream of these events. PadPointer now places a new finger within about a millisecond and moves it past touch slop at once, keeping the current speed. Apps drop the slop distance from the first drag delta, so the content usually resumes within a frame or two. Very frequent controller events still make it choppy; see the known limitations under **Verification status**.
 - **Container edges no longer pause the scroll.** When the finger runs out of room, a new finger goes down at the far side and the old one is cancelled, without a lift or fling.
 
+- **Firefox and other GeckoView browsers** (Focus, Fennec, Mull, Iceraven, Tor Browser, and others) ignore the cancel Android sends for a replaced finger, because its timestamp does not match the touch. Firefox then still thinks the old finger is down, so a new finger elsewhere made the page jump back, sometimes with a zoom. In these apps, PadPointer puts a replacement finger down exactly where Firefox last saw the old one. At the edge of the scroll area it lifts the old finger normally instead of cancelling it. It never lifts a finger before it has moved past Firefox's tap distance, so scrolling cannot click a link.
+
 If a cancellation arrives with no controller input, such as a real finger on the screen, scrolling stops instead of fighting that touch. Returning the stick to neutral eases out over a few frames, then holds still before lifting so apps add no fling. The re-gripping finger stays in the scrollable container under the cursor and re-reads its bounds as toolbars collapse. It stays clear of a visible keyboard when the cursor is outside it. This still uses touch gestures, not native mouse-wheel injection.
 
 Clicks and mapped actions end an active scroll touch first. After a mapped button interrupts scrolling, return the right stick to neutral before starting another scroll. **Scroll speed** still controls the overall rate.
@@ -79,7 +81,7 @@ Output: `app/build/outputs/apk/debug/app-debug.apk`. The supplied APK is a debug
 
 ## Verification status
 
-Debug build, 36 unit tests, Android lint, and APK signature verification passed. Configurable pointer on/off buttons were verified on the Android 15 emulator with a virtual gamepad. Combinations toggle in either order, single presses keep their actions, and repeated toggles stay reliable. The release includes `validation.txt` with the warnings; there are no lint errors. Unit tests cover noisy sticks, diagonal speed, acceleration, invalid data, screen bounds, scroll planning, stops, reversals, container edges, proportional speed, interruption, and touch slop.
+Debug build, 43 unit tests, Android lint, and APK signature verification passed. Configurable pointer on/off buttons were verified on the Android 15 emulator with a virtual gamepad. Combinations toggle in either order, single presses keep their actions, and repeated toggles stay reliable. The release includes `validation.txt` with the warnings; there are no lint errors. Unit tests cover noisy sticks, diagonal speed, acceleration, invalid data, screen bounds, scroll planning, stops, reversals, container edges, proportional speed, interruption, and touch slop.
 
 `ScrollDriverTest` holds the stick against `InjectorSimulation`, a model of Android's gesture injector based on the AOSP android14-release source.
 
@@ -95,6 +97,8 @@ Scrolling was measured on an Android 15 emulator (API 35, 60 Hz) in Settings ›
 | Jitter every 8 ms (extreme) | Frozen | Choppy: about 330 px/s, stops up to 183 ms |
 
 About 10% of frames show no movement even in the best runs, which is emulator rendering/recording jitter. No unintended taps occurred.
+
+In Firefox 160 on the same emulator (a mobile Wikipedia article), 0.2.4 jumped back to the top of the page about every 1.3 s while the stick was held, once with a zoom. 0.2.5 scrolls at 20–22 px every frame with no jumps. With jitter every 60 ms it keeps full speed and still never jumps back. A scroll left hanging by a stick release continues cleanly, and a tap afterwards opens the link under the pointer.
 
 Known limitations on Android 14–15 with a stick that keeps reporting small changes:
 - Very frequent controller events, every few milliseconds, still make scrolling choppy. Each one cancels the touch, and Android discards moves the app has not consumed yet.

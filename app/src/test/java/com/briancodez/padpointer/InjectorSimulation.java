@@ -16,7 +16,12 @@ import java.util.Random;
  *
  * <p>The app side follows RecyclerView: dragging starts once movement exceeds touch slop, which is subtracted
  * from the first scroll delta; ACTION_CANCEL stops without a fling; ACTION_UP flings if the finger was still
- * moving in the last 40 ms. Frames read the content the way Android's InputConsumer resamples touches:
+ * moving in the last 40 ms.
+ *
+ * <p>With {@code firefox = true} the app follows GeckoView and Firefox's APZ instead: GeckoView drops the injector's
+ * ACTION_CANCEL (its down time does not match); a DOWN while APZ is still panning is ignored ("impossible touch"),
+ * so the next moves pan from the old finger's last position; a pan starts once a touch passes the tolerance, with
+ * only the excess applied; and a touch lifted before passing the tolerance is a tap, which clicks the page. Frames read the content the way Android's InputConsumer resamples touches:
  * consume moves up to 5 ms before the frame, interpolate toward the next one (or extrapolate up to 8 ms),
  * never across a new DOWN, and leave the content unchanged on frames with no new move.
  */
@@ -30,6 +35,11 @@ final class InjectorSimulation implements ScrollDriver.Host {
     /** Mean gap between controller MotionEvents while the stick is held; 0 = none (or Android 16's fix). */
     double stickEventEveryMs = 0;
     boolean stickEventsCancelTouches = true;
+    /** Model Firefox (GeckoView) instead of a RecyclerView, and tell the planner to handle it. */
+    boolean firefox;
+    int firefoxTolerance = 28;
+    /** False reproduces 0.2.4, which treated Firefox like any other app. */
+    boolean plannerKnowsFirefox = true;
     /** Occasional main-thread stalls in the service: every N ms, block for M ms. */
     double stallEveryMs = 0, stallMs = 0;
 
@@ -40,6 +50,9 @@ final class InjectorSimulation implements ScrollDriver.Host {
     // ---- observations ----
     final List<double[]> frames = new ArrayList<>(); // {time, resampled offset}
     int downs, ups, cancels, flings, rejectedContinuations, emptySegments, endedCount;
+    /** Firefox: touches it treats as taps (page clicks), and content movement against the scroll direction. */
+    int taps;
+    double backwardPx;
     boolean lastEndForgotStick;
     double lastMoveTime = -1;
 
@@ -51,7 +64,7 @@ final class InjectorSimulation implements ScrollDriver.Host {
 
     // Injector (system) state.
     private final List<double[]> pending = new ArrayList<>(); // {time, x, y, action, endOfSequence, id}
-    private final List<int[]> inProgress = new ArrayList<>();   // {sequence, epoch}
+    private final List<Object[]> inProgress = new ArrayList<>(); // {sequence, epoch, segment}
     private boolean fingerScheduled;
     private int lastX, lastY, sequence;
     private double lastScheduled;
@@ -81,7 +94,11 @@ final class InjectorSimulation implements ScrollDriver.Host {
     }
 
     void startScroll(double time, float cursorX, float cursorY) {
-        onService(time, () -> driver.start(new ScrollMotion(area, cursorX, cursorY, slop, sampleMs)));
+        onService(time, () -> {
+            ScrollMotion motion = new ScrollMotion(area, cursorX, cursorY, slop, sampleMs);
+            if (firefox && plannerKnowsFirefox) motion.setGecko(firefoxTolerance);
+            driver.start(motion);
+        });
     }
 
     /** The controller reports a new right-stick position: one MotionEvent through the input filter. */
@@ -138,6 +155,10 @@ final class InjectorSimulation implements ScrollDriver.Host {
     @Override public ScrollMotion.Area refreshArea() { return area; }
     @Override public long now() { return (long) Math.floor(now); }
     @Override public void ended(boolean forgetStick) { endedCount++; lastEndForgotStick = forgetStick; }
+    private int[] stale;
+    @Override public void staleTouch(int x, int y) { stale = new int[]{x, y}; }
+    @Override public void touchEnded() { stale = null; }
+    @Override public int[] staleTouch() { return stale; }
 
     // ---- MotionEventInjector ----
     private void inject(ScrollMotion.Segment s, int epoch) {
@@ -145,7 +166,7 @@ final class InjectorSimulation implements ScrollDriver.Host {
         else if (!fingerScheduled || s.fromX() != lastX || s.fromY() != lastY) {
             rejectedContinuations++;
             cancelAnyPending();
-            notifyService(epoch, false);
+            notifyService(epoch, null);
             return;
         }
         double base = inProgress.isEmpty() ? now : lastScheduled;
@@ -163,9 +184,9 @@ final class InjectorSimulation implements ScrollDriver.Host {
             lastX = x; lastY = y;
             if (i == times.size() - 1 && !s.keepDown()) { events.add(new double[]{base + t, x, y, UP, 0, id}); fingerScheduled = false; }
         }
-        if (events.isEmpty()) { emptySegments++; notifyService(epoch, false); return; }
+        if (events.isEmpty()) { emptySegments++; notifyService(epoch, null); return; }
         events.get(events.size() - 1)[4] = 1;
-        inProgress.add(new int[]{id, epoch});
+        inProgress.add(new Object[]{id, epoch, s});
         for (double[] event : events) {
             pending.add(event);
             lastScheduled = event[0];
@@ -177,8 +198,8 @@ final class InjectorSimulation implements ScrollDriver.Host {
         if (!pending.remove(event)) return; // removed by a cancellation
         app((int) event[3], (int) event[2]);
         if (event[4] == 1) {
-            int[] done = inProgress.remove(0);
-            notifyService(done[1], true);
+            Object[] done = inProgress.remove(0);
+            notifyService((int) done[1], (ScrollMotion.Segment) done[2]);
         }
     }
 
@@ -186,18 +207,20 @@ final class InjectorSimulation implements ScrollDriver.Host {
         if (!pending.isEmpty()) {
             pending.clear();
             if (touchOpen) appCancel();
-            for (int[] seq : inProgress) notifyService(seq[1], false);
+            for (int i = inProgress.size() - 1; i >= 0; i--) notifyService((int) inProgress.get(i)[1], null); // AOSP order
             inProgress.clear();
         } else if (fingerScheduled && touchOpen) appCancel();
         fingerScheduled = false;
     }
 
-    private void notifyService(int epoch, boolean completed) {
-        onService(now + callbackMs, () -> { if (completed) driver.completed(epoch); else driver.cancelled(epoch); });
+    /** {@code completed} null = cancelled. */
+    private void notifyService(int epoch, ScrollMotion.Segment completed) {
+        onService(now + callbackMs, () -> { if (completed != null) driver.completed(epoch, completed); else driver.cancelled(epoch); });
     }
 
     // ---- RecyclerView ----
     private void app(int action, int y) {
+        if (firefox) { firefox(action, y); return; }
         if (action == DOWN) {
             downs++; touchOpen = true; dragging = false; touchLastY = y; history.clear(); drag++;
         } else if (action == MOVE) {
@@ -211,7 +234,40 @@ final class InjectorSimulation implements ScrollDriver.Host {
         }
         history.add(new double[]{now, y});
     }
-    private void appCancel() { cancels++; touchOpen = false; dragging = false; }
+    private void appCancel() { cancels++; touchOpen = false; dragging = false; } // Firefox never sees it: GeckoView drops it
+
+    // ---- GeckoView + APZ ----
+    private static final int NOTHING = 0, TOUCHING = 1, PANNING = 2;
+    private int apz = NOTHING, apzStartY, apzLastY, tapStartY;
+    private boolean tapMoved;
+    private void firefox(int action, int y) {
+        if (action == DOWN) {
+            downs++; touchOpen = true; history.clear(); drag++;
+            tapStartY = y; tapMoved = false; // the gesture listener starts a new touch either way
+            if (apz != PANNING) { apz = TOUCHING; apzStartY = apzLastY = y; } // else: "Received impossible touch"
+        } else if (action == MOVE) {
+            if (Math.abs(y - tapStartY) > firefoxTolerance) tapMoved = true;
+            if (apz == TOUCHING) {
+                int distance = Math.abs(y - apzStartY);
+                if (distance > firefoxTolerance) {
+                    int excess = distance - firefoxTolerance; // the move is split at the tolerance
+                    pan(apzStartY > y ? excess : -excess);
+                    apz = PANNING;
+                }
+                apzLastY = y;
+            } else if (apz == PANNING) { pan(apzLastY - y); apzLastY = y; }
+        } else {
+            ups++; touchOpen = false;
+            if (!tapMoved) taps++;
+            if (apz == PANNING && velocity() > minFlingSpeed) flings++;
+            apz = NOTHING;
+        }
+        history.add(new double[]{now, y});
+    }
+    private void pan(int dy) {
+        if (dy < 0) backwardPx -= dy; // these tests always scroll forward (stick down)
+        offset += dy; lastMoveTime = now; timeline.add(new double[]{now, offset, drag});
+    }
     private double velocity() {
         double[] last = history.get(history.size() - 1);
         if (now - last[0] > 40) return 0; // Android assumes the pointer stopped.

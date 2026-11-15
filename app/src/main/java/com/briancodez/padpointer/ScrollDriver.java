@@ -13,7 +13,7 @@ package com.briancodez.padpointer;
  */
 final class ScrollDriver {
     interface Host {
-        /** Dispatch a segment and report it back through completed/cancelled(epoch). False if Android refused. */
+        /** Dispatch a segment and report it back through completed(epoch, segment)/cancelled(epoch). False if Android refused. */
         boolean send(ScrollMotion.Segment segment, int epoch);
         float stickX();
         float stickY();
@@ -28,6 +28,12 @@ final class ScrollDriver {
         long now();
         /** The session is over. If {@code forgetStick}, ignore the stick until it reports a new position. */
         void ended(boolean forgetStick);
+        /** Firefox ignored the cancel of a finger last seen at (x, y), so it still treats that finger as down. */
+        void staleTouch(int x, int y);
+        /** A finger was lifted properly, so the app has no stale touch. */
+        void touchEnded();
+        /** Where the Firefox-engine target still believes a finger is down, or null. */
+        int[] staleTouch();
     }
 
     /** A cancellation counts as controller-caused when controller input arrived this close to it. */
@@ -38,6 +44,8 @@ final class ScrollDriver {
     private ScrollMotion motion;
     private int epoch, inFlight, grips;
     private long lastMoveAt = -1, cancelledAt = -1, lastStickAt = Long.MIN_VALUE / 2, areaAt;
+    /** The latest finger position the app has received (Firefox keeps panning from there after a cancel). */
+    private int deliveredX = -1, deliveredY = -1;
 
     ScrollDriver(Host host) { this.host = host; }
 
@@ -49,6 +57,7 @@ final class ScrollDriver {
     void start(ScrollMotion motion) {
         this.motion = motion;
         lastMoveAt = cancelledAt = -1;
+        deliveredX = deliveredY = -1;
         areaAt = host.now();
         feed();
     }
@@ -59,9 +68,13 @@ final class ScrollDriver {
         if (cancelledAt >= 0) feed();
     }
 
-    void completed(int segmentEpoch) {
+    void completed(int segmentEpoch, ScrollMotion.Segment segment) {
         inFlight--;
-        if (segmentEpoch == epoch) lastMoveAt = host.now();
+        if (segmentEpoch == epoch) {
+            lastMoveAt = host.now();
+            deliveredX = segment.toX(); deliveredY = segment.toY();
+            if (!segment.keepDown()) host.touchEnded();
+        }
         feed();
     }
 
@@ -69,6 +82,7 @@ final class ScrollDriver {
         inFlight--;
         if (segmentEpoch == epoch && motion != null) {
             epoch++; // Everything still queued for that finger is doomed; Android reports each one.
+            if (motion.gecko() && deliveredX >= 0) host.staleTouch(deliveredX, deliveredY);
             if (!motion.ended()) {
                 long now = host.now();
                 if (lastMoveAt >= 0) {
@@ -111,7 +125,8 @@ final class ScrollDriver {
             ScrollMotion.Segment segment = motion.next(host.stickX(), host.stickY(), host.deadzone(), host.speed(), requested, blocked);
             if (segment == null) {
                 // No room left in the container: let the queued path finish, then start a new finger at the far side.
-                // That new touch makes Android cancel this one, so the app sees no lift and no fling.
+                // That new touch makes Android cancel this one, so the app sees no lift and no fling. (Firefox ignores
+                // that cancel, so there the planner lifts the finger itself instead of returning null.)
                 if (inFlight > 0) return;
                 if (!grip(now, false)) return;
                 continue;
@@ -123,9 +138,16 @@ final class ScrollDriver {
     private boolean grip(long now, boolean urgent) {
         if (now - areaAt >= AREA_REFRESH_MS) { motion.setArea(host.refreshArea()); areaAt = now; }
         int since = lastMoveAt < 0 ? -1 : (int) Math.min(Integer.MAX_VALUE, now - lastMoveAt);
-        ScrollMotion.Segment segment = motion.grip(host.stickX(), host.stickY(), host.deadzone(), host.speed(), since, urgent);
+        // Firefox still pans from where it last saw a cancelled finger; a new finger anywhere else makes it jump.
+        int[] stale = !motion.gecko() ? null : urgent && deliveredX >= 0 ? new int[]{deliveredX, deliveredY}
+                : lastMoveAt < 0 ? host.staleTouch() : null;
+        ScrollMotion.Segment segment = stale != null
+                ? motion.gripInPlace(stale[0], stale[1], host.stickX(), host.stickY(), host.deadzone(), host.speed(), since)
+                : motion.grip(host.stickX(), host.stickY(), host.deadzone(), host.speed(), since, urgent);
         cancelledAt = -1;
         grips++;
+        // The DOWN is delivered as soon as Android accepts the gesture, before its move completes.
+        deliveredX = segment.fromX(); deliveredY = segment.fromY();
         return send(segment);
     }
 

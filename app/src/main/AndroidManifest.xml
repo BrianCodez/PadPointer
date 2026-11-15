@@ -2,6 +2,14 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.WRITE_SETTINGS" />
+    <!-- Lets PadPointer see installed browsers' components, to recognize Firefox-engine (GeckoView) browsers. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="https" />
+        </intent>
+    </queries>
     <application android:allowBackup="false" android:label="@string/app_name"
         android:icon="@drawable/ic_pointer" android:theme="@style/AppTheme" android:supportsRtl="true">
         <activity android:name=".MainActivity" android:exported="true">

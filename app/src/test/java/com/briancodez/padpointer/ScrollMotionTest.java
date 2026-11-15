@@ -133,6 +133,42 @@ public class ScrollMotionTest {
         }
     }
 
+    @Test public void firefoxRegripStartsExactlyWhereFirefoxLastSawTheFinger() {
+        ScrollMotion motion = new ScrollMotion(AREA, 500, 1000, SLOP, 16);
+        motion.setGecko(28);
+        ScrollMotion.Segment grip = motion.gripInPlace(500, 900, 0, 1, DEAD, SPEED, 10);
+        assertTrue(grip.fresh());
+        assertEquals(500, grip.fromX()); assertEquals(900, grip.fromY());
+        int moved = grip.fromY() - grip.toY();
+        assertTrue("No slop jump, just the missed motion: " + moved, moved > 0 && moved < 20);
+    }
+
+    @Test public void firefoxFingerAtTheEdgeIsLiftedWhileMovingThenRegrippedPastItsTolerance() {
+        ScrollMotion motion = new ScrollMotion(new ScrollMotion.Area(100, 200, 300, 500), 220, 300, SLOP, 16);
+        motion.setGecko(28);
+        motion.grip(0, 1, DEAD, SPEED, -1, false);
+        ScrollMotion.Segment next;
+        int moves = 0;
+        do { next = motion.next(0, 1, DEAD, SPEED, true, false); assertNotNull("Never left for a cancel", next); assertTrue(++moves < 100); }
+        while (next.keepDown());
+        assertTrue("Lifted while moving", next.toY() < next.fromY());
+        assertFalse(motion.down()); assertFalse("Not the end of scrolling", motion.ended());
+        ScrollMotion.Segment grip = motion.grip(0, 1, DEAD, SPEED, 2, false);
+        assertTrue(grip.fresh() && grip.fromY() - grip.toY() > 28);
+    }
+
+    @Test public void firefoxFingerIsNeverLiftedBeforeItPassesTheTapTolerance() {
+        ScrollMotion motion = new ScrollMotion(AREA, 500, 1000, SLOP, 16);
+        motion.setGecko(28);
+        ScrollMotion.Segment grip = motion.gripInPlace(500, 900, 0, 1, DEAD, SPEED, 2);
+        ScrollMotion.Segment topUp = motion.next(0, 1, DEAD, SPEED, false, true); // a click is waiting
+        assertTrue(topUp.keepDown());
+        assertTrue("Moves past Firefox's tolerance first", grip.fromY() - topUp.toY() > 28);
+        ScrollMotion.Segment lift = motion.next(0, 1, DEAD, SPEED, false, true);
+        assertFalse(lift.keepDown());
+        assertEquals(lift.fromY(), lift.toY());
+    }
+
     @Test public void noiseAndInvalidAxesStopScrolling() {
         float[][] inputs = {{0.08f, 0.08f}, {Float.NaN, 1}, {1, Float.POSITIVE_INFINITY}};
         for (float[] input : inputs) {
