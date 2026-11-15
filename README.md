@@ -12,7 +12,7 @@ https://github.com/BrianCodez/PadPointer
 
 In Obtainium, choose **Add app**, paste the URL, and add it with the default GitHub source settings. Releases contain one APK. Obtainium can check for and install future published releases; updates will still require publishing a new APK with a higher version code and the same signing key.
 
-Version 0.2.1 installs over the earlier 0.1.0 / 0.2.0 builds and preserves settings. Open PadPointer, enable **PadPointer controller mouse** in Android's accessibility settings, and turn on **Pointer enabled**. Android may require an additional confirmation for a sideloaded accessibility service. This is an early debug-signed test build; device verification is pending.
+Version 0.2.2 installs over earlier builds and preserves settings. Open PadPointer, enable **PadPointer controller mouse** in Android's accessibility settings, and turn on **Pointer enabled**. Android may require an additional confirmation for a sideloaded accessibility service. This is an early debug-signed test build; device verification is pending.
 
 The accessibility service must be enabled, but no floating accessibility shortcut is needed or requested. Use L3 or the app's **Pointer enabled** switch. If Android retained a shortcut from an earlier version, open **Settings → Accessibility → PadPointer controller mouse** (under **Installed apps** on some devices) and turn off its **Shortcut** option while leaving the service itself enabled. See [Android's shortcut-removal instructions](https://support.google.com/accessibility/android/answer/7650693).
 
@@ -32,6 +32,10 @@ The accessibility service must be enabled, but no floating accessibility shortcu
 Move over an input field and press A. The app receives a 50 ms touch gesture; its own text editor handles focus and the user's currently selected IME. The pointer can tap that keyboard's keys. R3 also permits native controller navigation if the selected keyboard supports it. R3 does not add controller navigation to an IME that lacks it.
 
 Settings include speed, acceleration, deadzone, size, scrolling, inactivity hiding, vibration, and button mapping. Mappable actions also include drag toggle, notifications, screenshot, media play/pause, brightness, and repeat click at a saved location. Brightness access is optional. Repeat click stops with its mapped button, pointer off, screen off, keyboard pass-through, or controller disconnect.
+
+Joystick scrolling uses a continued virtual-finger touch in 32 ms segments. Stick deflection controls speed through a radial deadzone and short smoothing ramp. Returning to neutral stops movement, then lifts after a brief stationary interval to reduce unwanted flings. At the edge of the detected scrollable container the touch settles, lifts, and re-anchors inside that container. This still uses touch gestures, so a brief reset can occur at its boundaries; it is not native mouse-wheel injection. Scroll bounds are clipped away from a visible keyboard when the cursor is outside it.
+
+Clicks and mapped actions end an active scroll touch first. After a mapped button interrupts scrolling, return the right stick to neutral before starting another scroll. **Scroll speed** still controls the overall rate.
 
 ## Cursor appearance and stick testing
 
@@ -67,7 +71,7 @@ Output: `app/build/outputs/apk/debug/app-debug.apk`. The supplied APK is a debug
 
 ## Verification status
 
-Debug build, five unit tests, Android lint, and APK signature verification passed. The release includes `validation.txt` with the warnings; there are no lint errors. Unit tests cover noisy sticks, diagonal speed, acceleration, invalid data, and screen bounds. They do not establish runtime keyboard behavior.
+Debug build, 13 unit tests, Android lint, and APK signature verification passed. The release includes `validation.txt` with the warnings; there are no lint errors. Unit tests cover noisy sticks, diagonal speed, acceleration, invalid data, screen bounds, continuous scroll segments, stops, reversals, container boundaries, proportional speed, interruption, and touch slop. They do not establish runtime scrolling or keyboard behavior.
 
 Runtime testing was blocked by the Device panel error: **Android emulator video needs the libx264 encoder.** The host's FFmpeg has no libx264 encoder. No app launch, keyboard result, or physical-controller result is claimed. A test AVD named `PadPointer_API35` was created and remains available after the host codec issue is fixed.
 

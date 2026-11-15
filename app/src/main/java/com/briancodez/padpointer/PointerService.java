@@ -11,6 +11,7 @@ import android.content.SharedPreferences;
 import android.content.res.Configuration;
 import android.graphics.Path;
 import android.graphics.PixelFormat;
+import android.graphics.Rect;
 import android.hardware.input.InputManager;
 import android.media.AudioManager;
 import android.os.Handler;
@@ -27,7 +28,10 @@ import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
+import android.view.ViewConfiguration;
 import android.view.accessibility.AccessibilityEvent;
+import android.view.accessibility.AccessibilityNodeInfo;
+import android.view.accessibility.AccessibilityWindowInfo;
 import android.widget.Toast;
 import java.util.ArrayDeque;
 import java.util.HashSet;
@@ -38,6 +42,7 @@ public final class PointerService extends AccessibilityService implements Shared
     private final HashSet<Integer> consumed = new HashSet<>();
     private final HashSet<Integer> directions = new HashSet<>();
     private final ArrayDeque<GestureDescription> gestures = new ArrayDeque<>();
+    private final ArrayDeque<String> deferredActions = new ArrayDeque<>();
     private Prefs prefs;
     private WindowManager windows;
     private CursorView cursor;
@@ -50,6 +55,9 @@ public final class PointerService extends AccessibilityService implements Shared
     private int lastDeviceId = -1;
     private long lastFrame, lastActivity;
     private GestureDescription.StrokeDescription stroke;
+    private boolean scrolling;
+    private boolean scrollInterrupted;
+    private ScrollMotion scrollMotion;
 
     private final Runnable holdClick = () -> { if (clickPending) { clickPending = false; dragging = true; } };
     private final Runnable repeater = new Runnable() {
@@ -79,11 +87,12 @@ public final class PointerService extends AccessibilityService implements Shared
                     moveCursor();
                 }
                 if (!busy) {
-                    if (stroke != null || dragging) continueDrag();
+                    if (stroke != null) { if (scrolling) continueScroll(); else continueDrag(); }
                     else if (!gestures.isEmpty()) pump();
-                    else if (Math.hypot(scrollX, scrollY) > prefs.deadzone()) scroll();
+                    else if (dragging) continueDrag();
+                    else if (scrollRequested()) startScroll();
                 }
-                if (prefs.timeout() > 0 && now - lastActivity > prefs.timeout() * 1000L && !dragging && !repeat) cursor.setVisibility(View.INVISIBLE);
+                if (prefs.timeout() > 0 && now - lastActivity > prefs.timeout() * 1000L && !dragging && !scrolling && !repeat) cursor.setVisibility(View.INVISIBLE);
             }
             handler.postDelayed(this, 16);
         }
@@ -137,7 +146,7 @@ public final class PointerService extends AccessibilityService implements Shared
         enabled = prefs.enabled();
         if (!enabled || !wasEnabled) {
             axisX = axisY = scrollX = scrollY = 0;
-            directions.clear(); gestures.clear();
+            directions.clear(); gestures.clear(); deferredActions.clear();
             clickPending = false; dragging = false; typing = false;
             stopRepeat(); handler.removeCallbacks(holdClick);
         }
@@ -176,6 +185,7 @@ public final class PointerService extends AccessibilityService implements Shared
         axisX = event.getAxisValue(MotionEvent.AXIS_X); axisY = event.getAxisValue(MotionEvent.AXIS_Y);
         scrollX = GamepadAxes.rightX(event);
         scrollY = GamepadAxes.rightY(event);
+        if (Math.hypot(scrollX, scrollY) <= prefs.deadzone()) scrollInterrupted = false;
         // Some controllers expose their D-pad only as HAT axes.
         if (axisX == 0 && axisY == 0) {
             axisX = event.getAxisValue(MotionEvent.AXIS_HAT_X) * 0.5f;
@@ -208,7 +218,7 @@ public final class PointerService extends AccessibilityService implements Shared
         if (key == KeyEvent.KEYCODE_BUTTON_THUMBR) {
             consumed.add(key); typing = !typing;
             axisX = axisY = scrollX = scrollY = 0; directions.clear(); stopRepeat();
-            clickPending = false; dragging = false; gestures.clear(); handler.removeCallbacks(holdClick);
+            clickPending = false; dragging = false; gestures.clear(); deferredActions.clear(); handler.removeCallbacks(holdClick);
             pump();
             AccessibilityServiceInfo info = getServiceInfo();
             if (info != null) { info.setMotionEventSources(typing ? 0 : InputDevice.SOURCE_JOYSTICK); setServiceInfo(info); }
@@ -222,6 +232,7 @@ public final class PointerService extends AccessibilityService implements Shared
         }
         String action = key == KeyEvent.KEYCODE_DPAD_CENTER ? "Click" : prefs.action(key);
         if (action.equals("Pass through")) return false;
+        scrollInterrupted = true;
         consumed.add(key); showCursor(); haptic(event.getDevice());
         if (action.equals("Click")) {
             clickPending = true;
@@ -239,6 +250,11 @@ public final class PointerService extends AccessibilityService implements Shared
     }
 
     private void perform(String action) {
+        if (scrolling) {
+            // Lift the virtual finger before actions can navigate to a different app/window.
+            if (deferredActions.size() < 8) deferredActions.add(action);
+            pump(); return;
+        }
         switch (action) {
             case "Back" -> performGlobalAction(GLOBAL_ACTION_BACK);
             case "Home" -> performGlobalAction(GLOBAL_ACTION_HOME);
@@ -286,17 +302,26 @@ public final class PointerService extends AccessibilityService implements Shared
     }
     private void pump() {
         if (busy) return;
-        if (stroke != null) { continueDrag(); return; }
+        if (stroke != null) { if (scrolling) continueScroll(); else continueDrag(); return; }
         if (!enabled || typing) return;
+        while (!deferredActions.isEmpty()) perform(deferredActions.remove());
         if (!gestures.isEmpty()) dispatch(gestures.remove(), null);
     }
     private void dispatch(GestureDescription gesture, GestureDescription.StrokeDescription nextStroke) {
         busy = true;
         boolean accepted = dispatchGesture(gesture, new GestureResultCallback() {
-            @Override public void onCompleted(GestureDescription completed) { busy = false; stroke = nextStroke; if (!destroyed) pump(); }
-            @Override public void onCancelled(GestureDescription cancelled) { busy = false; stroke = null; dragging = false; if (!destroyed) pump(); }
+            @Override public void onCompleted(GestureDescription completed) {
+                busy = false; stroke = nextStroke;
+                if (nextStroke == null) { scrolling = false; scrollMotion = null; }
+                if (!destroyed) pump();
+            }
+            @Override public void onCancelled(GestureDescription cancelled) {
+                if (scrolling) scrollX = scrollY = 0;
+                busy = false; stroke = null; dragging = false; scrolling = false; scrollMotion = null;
+                if (!destroyed) pump();
+            }
         }, handler);
-        if (!accepted) { busy = false; stroke = null; dragging = false; gestures.clear(); toast("Android could not dispatch the touch gesture"); }
+        if (!accepted) { busy = false; stroke = null; dragging = false; scrolling = false; scrollMotion = null; gestures.clear(); deferredActions.clear(); toast("Android could not dispatch the touch gesture"); }
     }
     private void continueDrag() {
         if (busy || (!dragging && stroke == null)) return;
@@ -311,14 +336,73 @@ public final class PointerService extends AccessibilityService implements Shared
         }
         dispatch(onDisplay(new GestureDescription.Builder().addStroke(next)).build(), continuing ? next : null);
     }
-    private void scroll() {
-        float distance = Math.min(width, height) * 0.22f * prefs.data.getInt("scroll", 100) / 100f;
-        float fromX = PointerMath.clamp(x, width), fromY = PointerMath.clamp(y, height);
-        float toX = PointerMath.clamp(fromX - scrollX * distance, width);
-        float toY = PointerMath.clamp(fromY - scrollY * distance, height);
-        if (Math.abs(toX - fromX) + Math.abs(toY - fromY) < 2) return;
-        Path path = new Path(); path.moveTo(fromX, fromY); path.lineTo(toX, toY);
-        dispatch(onDisplay(new GestureDescription.Builder().addStroke(new GestureDescription.StrokeDescription(path, 0, 150))).build(), null);
+    private boolean scrollRequested() {
+        return enabled && !typing && !dragging && !clickPending && !repeat && !scrollInterrupted && gestures.isEmpty() && deferredActions.isEmpty()
+                && Float.isFinite(scrollX) && Float.isFinite(scrollY) && Math.hypot(scrollX, scrollY) > prefs.deadzone();
+    }
+    private void startScroll() {
+        scrolling = true;
+        scrollMotion = new ScrollMotion(scrollArea(), x, y, scrollX, scrollY, ViewConfiguration.get(this).getScaledTouchSlop());
+        continueScroll();
+    }
+    private void continueScroll() {
+        if (busy || scrollMotion == null) return;
+        float speed = Math.min(width, height) * 1.2f * prefs.data.getInt("scroll", 100) / 100f;
+        ScrollMotion.Segment segment = scrollMotion.next(scrollX, scrollY, prefs.deadzone(), speed, scrollRequested());
+        Path path = new Path(); path.moveTo(segment.fromX(), segment.fromY());
+        if (segment.fromX() != segment.toX() || segment.fromY() != segment.toY()) path.lineTo(segment.toX(), segment.toY());
+        GestureDescription.StrokeDescription next = stroke == null
+                ? new GestureDescription.StrokeDescription(path, 0, segment.durationMs(), segment.keepDown())
+                : stroke.continueStroke(path, 0, segment.durationMs(), segment.keepDown());
+        dispatch(onDisplay(new GestureDescription.Builder().addStroke(next)).build(), segment.keepDown() ? next : null);
+        showCursor();
+    }
+    private ScrollMotion.Area scrollArea() {
+        Rect bounds = new Rect(0, 0, (int) width, (int) height);
+        Rect keyboard = null;
+        java.util.List<AccessibilityWindowInfo> visibleWindows = getWindows();
+        for (AccessibilityWindowInfo window : visibleWindows) {
+            if (window.getType() == AccessibilityWindowInfo.TYPE_INPUT_METHOD) {
+                keyboard = new Rect(); window.getBoundsInScreen(keyboard); break;
+            }
+        }
+        // Reposition a continued swipe only inside the container under the cursor, including nested lists.
+        for (AccessibilityWindowInfo window : visibleWindows) {
+            if (window.getType() == AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY) continue;
+            Rect windowBounds = new Rect(); window.getBoundsInScreen(windowBounds);
+            if (!windowBounds.contains((int) x, (int) y)) continue;
+            bounds.set(windowBounds);
+            AccessibilityNodeInfo root = window.getRoot();
+            if (root != null) {
+                try { findScrollBounds(root, bounds, new int[]{512}); }
+                finally { root.recycle(); }
+            }
+            if (!bounds.intersect(windowBounds)) bounds.set(windowBounds);
+            break;
+        }
+        if (!bounds.intersect(0, 0, (int) width, (int) height)) bounds.set(0, 0, (int) width, (int) height);
+        if (keyboard != null && !keyboard.contains((int) x, (int) y) && Rect.intersects(bounds, keyboard)) {
+            // Keep scroll re-anchoring out of an overlaid keyboard, including floating keyboards.
+            if (y < keyboard.top) bounds.bottom = Math.min(bounds.bottom, keyboard.top);
+            else if (y >= keyboard.bottom) bounds.top = Math.max(bounds.top, keyboard.bottom);
+            else if (x < keyboard.left) bounds.right = Math.min(bounds.right, keyboard.left);
+            else if (x >= keyboard.right) bounds.left = Math.max(bounds.left, keyboard.right);
+        }
+        float insetX = Math.min(12 * getResources().getDisplayMetrics().density, Math.max(0, (bounds.width() - 2) / 4f));
+        float insetY = Math.min(12 * getResources().getDisplayMetrics().density, Math.max(0, (bounds.height() - 2) / 4f));
+        return new ScrollMotion.Area(bounds.left + insetX, bounds.top + insetY, bounds.right - 1 - insetX, bounds.bottom - 1 - insetY);
+    }
+    private void findScrollBounds(AccessibilityNodeInfo node, Rect result, int[] budget) {
+        if (budget[0]-- <= 0) return;
+        Rect candidate = new Rect(); node.getBoundsInScreen(candidate);
+        if (!candidate.contains((int) x, (int) y)) return;
+        if (node.isScrollable() && candidate.width() > 2 && candidate.height() > 2) result.set(candidate);
+        for (int i = 0; i < node.getChildCount() && budget[0] > 0; i++) {
+            AccessibilityNodeInfo child = node.getChild(i);
+            if (child == null) continue;
+            try { findScrollBounds(child, result, budget); }
+            finally { child.recycle(); }
+        }
     }
 
     private void stopRepeat() { repeat = false; handler.removeCallbacks(repeater); }
