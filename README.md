@@ -14,7 +14,7 @@ In Obtainium, choose **Add app**, paste the URL, and add it with the default Git
 
 Version 0.2.2 installs over earlier builds and preserves settings. Open PadPointer, enable **PadPointer controller mouse** in Android's accessibility settings, and turn on **Pointer enabled**. Android may require an additional confirmation for a sideloaded accessibility service. This is an early debug-signed test build; device verification is pending.
 
-The accessibility service must be enabled, but no floating accessibility shortcut is needed or requested. Use L3 or the app's **Pointer enabled** switch. If Android retained a shortcut from an earlier version, open **Settings → Accessibility → PadPointer controller mouse** (under **Installed apps** on some devices) and turn off its **Shortcut** option while leaving the service itself enabled. See [Android's shortcut-removal instructions](https://support.google.com/accessibility/android/answer/7650693).
+The accessibility service must be enabled, but no floating accessibility shortcut is needed or requested. Use your on/off buttons (L3 by default) or the app's **Pointer enabled** switch. If Android retained a shortcut from an earlier version, open **Settings → Accessibility → PadPointer controller mouse** (under **Installed apps** on some devices) and turn off its **Shortcut** option while leaving the service itself enabled. See [Android's shortcut-removal instructions](https://support.google.com/accessibility/android/answer/7650693).
 
 | Input | Default action |
 | --- | --- |
@@ -26,10 +26,12 @@ The accessibility service must be enabled, but no floating accessibility shortcu
 | X / Y | Double tap / long press |
 | Start / Select | Home / Recents |
 | L1 / R1 | Volume down / up |
-| L3 | Pointer on / off |
+| L3 (changeable) | Pointer on / off |
 | R3 | Pass controller input to the focused app or keyboard; press again to return |
 
 Move over an input field and press A. The app receives a 50 ms touch gesture; its own text editor handles focus and the user's currently selected IME. The pointer can tap that keyboard's keys. R3 also permits native controller navigation if the selected keyboard supports it. R3 does not add controller navigation to an IME that lacks it.
+
+**Pointer on / off buttons:** under **Pointer on / off**, tap **Change on / off buttons…**, hold any controller button or several together (for example L1 + R1 or Select + Start), then let go. **Reset to L3** restores the default. A single button always toggles the pointer, even in games. With a combination, each button keeps its normal use when pressed alone. While the pointer is off, games still receive the first buttons; only the button that completes the combination is taken. While the pointer is on, combination buttons wait up to 250 ms for the rest before doing their own action. R3 alone stays reserved for keyboard pass-through.
 
 Settings include speed, acceleration, deadzone, size, scrolling, inactivity hiding, vibration, and button mapping. Mappable actions also include drag toggle, notifications, screenshot, media play/pause, brightness, and repeat click at a saved location. Brightness access is optional. Repeat click stops with its mapped button, pointer off, screen off, keyboard pass-through, or controller disconnect.
 
@@ -77,7 +79,7 @@ Output: `app/build/outputs/apk/debug/app-debug.apk`. The supplied APK is a debug
 
 ## Verification status
 
-Debug build, 25 unit tests, Android lint, and APK signature verification passed. The release includes `validation.txt` with the warnings; there are no lint errors. Unit tests cover noisy sticks, diagonal speed, acceleration, invalid data, screen bounds, scroll planning, stops, reversals, container edges, proportional speed, interruption, and touch slop.
+Debug build, 36 unit tests, Android lint, and APK signature verification passed. Configurable pointer on/off buttons were verified on the Android 15 emulator with a virtual gamepad. Combinations toggle in either order, single presses keep their actions, and repeated toggles stay reliable. The release includes `validation.txt` with the warnings; there are no lint errors. Unit tests cover noisy sticks, diagonal speed, acceleration, invalid data, screen bounds, scroll planning, stops, reversals, container edges, proportional speed, interruption, and touch slop.
 
 `ScrollDriverTest` holds the stick against `InjectorSimulation`, a model of Android's gesture injector based on the AOSP android14-release source.
 

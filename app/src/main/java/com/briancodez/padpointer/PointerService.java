@@ -39,9 +39,14 @@ import java.util.HashSet;
 
 public final class PointerService extends AccessibilityService implements SharedPreferences.OnSharedPreferenceChangeListener, InputManager.InputDeviceListener {
     static boolean connected;
+    /** The settings screen is recording new on/off buttons; let every controller button through to it. */
+    static volatile boolean capturing;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final HashSet<Integer> consumed = new HashSet<>();
     private final HashSet<Integer> directions = new HashSet<>();
+    private final HashSet<Integer> swallowRelease = new HashSet<>();
+    private ButtonChord chord = new ButtonChord(Prefs.DEFAULT_POINTER_BUTTONS);
+    private final Runnable chordTimeout = this::runWaitingButtons;
     private final ArrayDeque<GestureDescription> gestures = new ArrayDeque<>();
     private final ArrayDeque<String> deferredActions = new ArrayDeque<>();
     private Prefs prefs;
@@ -173,10 +178,14 @@ public final class PointerService extends AccessibilityService implements Shared
             clickPending = false; dragging = false; typing = false;
             stopRepeat(); handler.removeCallbacks(holdClick);
         }
+        int[] onOff = prefs.pointerButtons();
+        if (!chord.matches(onOff)) { handler.removeCallbacks(chordTimeout); chord = new ButtonChord(onOff); }
         AccessibilityServiceInfo info = getServiceInfo();
-        if (info != null) {
+        int sources = enabled && !typing ? InputDevice.SOURCE_JOYSTICK : 0;
+        // Changing the service's settings makes Android reroute releases of held buttons, so only do it when needed.
+        if (info != null && ((info.flags & AccessibilityServiceInfo.FLAG_REQUEST_FILTER_KEY_EVENTS) == 0 || info.getMotionEventSources() != sources)) {
             info.flags |= AccessibilityServiceInfo.FLAG_REQUEST_FILTER_KEY_EVENTS;
-            info.setMotionEventSources(enabled && !typing ? InputDevice.SOURCE_JOYSTICK : 0);
+            info.setMotionEventSources(sources);
             setServiceInfo(info);
         }
         if (enabled && prefs.forceKeyboard()) {
@@ -197,7 +206,7 @@ public final class PointerService extends AccessibilityService implements Shared
 
     private void toggle() {
         prefs.data.edit().putBoolean("enabled", !enabled).apply();
-        toast(enabled ? "Pointer on · R3 passes controls to the keyboard" : "Pointer off");
+        toast(enabled ? "Pointer on · R3 passes controls to the keyboard" : "Pointer off · " + prefs.pointerButtonsName() + " turns it back on");
     }
 
     @Override public void onMotionEvent(MotionEvent event) { motion(event); }
@@ -225,20 +234,50 @@ public final class PointerService extends AccessibilityService implements Shared
         boolean controller = event.isFromSource(InputDevice.SOURCE_GAMEPAD) || event.isFromSource(InputDevice.SOURCE_JOYSTICK)
                 || (input != null && (input.supportsSource(InputDevice.SOURCE_GAMEPAD) || input.supportsSource(InputDevice.SOURCE_JOYSTICK)))
                 || (KeyEvent.isGamepadButton(key) && event.getDeviceId() >= 0);
-        if (!controller) return false;
+        if (!controller || capturing) return false; // While capturing, the settings screen records the buttons itself.
         lastDeviceId = event.getDeviceId();
-        if (event.getAction() == KeyEvent.ACTION_UP && consumed.remove(key)) {
-            directions.remove(key);
-            if (key == KeyEvent.KEYCODE_DPAD_CENTER || "Click".equals(prefs.action(key))) finishClick();
-            return true;
+        if (event.getAction() == KeyEvent.ACTION_UP) {
+            // Released before the rest of its combination arrived: it was an ordinary press of that button.
+            if (chord.isWaiting(key)) runWaitingButtons();
+            if (chord.release(key)) return true;
+            return buttonUp(key);
         }
         if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
-        if (event.getRepeatCount() > 0) return consumed.contains(key);
-        if (key == KeyEvent.KEYCODE_BUTTON_THUMBL) {
-            consumed.add(key);
-            toggle();
-            return true;
+        if (event.getRepeatCount() > 0) {
+            chord.stillHeld(key, event.getEventTime());
+            return consumed.contains(key) || chord.isSwallowed(key) || chord.isWaiting(key);
         }
+        // Any other button means the held-back ones were not the start of the combination.
+        if (!chord.isMember(key) && chord.isWaiting()) runWaitingButtons();
+        switch (chord.press(key, actsOnItsOwn(key), event.getEventTime())) {
+            case TOGGLE -> { handler.removeCallbacks(chordTimeout); toggle(); return true; }
+            case WAIT -> { handler.removeCallbacks(chordTimeout); handler.postDelayed(chordTimeout, ButtonChord.WINDOW_MS); return true; }
+            default -> { return buttonDown(key, event.getDevice()); }
+        }
+    }
+
+    /**
+     * Whether PadPointer handles this button by itself right now, so it can wait briefly for the rest of the on/off
+     * combination without the app missing a press.
+     */
+    private boolean actsOnItsOwn(int key) {
+        if (!enabled) return false;
+        if (key == KeyEvent.KEYCODE_BUTTON_THUMBR) return true;
+        if (typing) return false;
+        if (key >= KeyEvent.KEYCODE_DPAD_UP && key <= KeyEvent.KEYCODE_DPAD_RIGHT || key == KeyEvent.KEYCODE_DPAD_CENTER) return true;
+        return !"Pass through".equals(prefs.action(key));
+    }
+
+    /** Buttons held back for the combination that turned out to be ordinary presses. */
+    private void runWaitingButtons() {
+        handler.removeCallbacks(chordTimeout);
+        for (int key : chord.expire()) {
+            // If the button no longer does anything (pointer mode changed meanwhile), still swallow its release.
+            if (!buttonDown(key, InputDevice.getDevice(lastDeviceId))) swallowRelease.add(key);
+        }
+    }
+
+    private boolean buttonDown(int key, InputDevice device) {
         if (!enabled) return false;
         if (key == KeyEvent.KEYCODE_BUTTON_THUMBR) {
             consumed.add(key); typing = !typing;
@@ -258,11 +297,19 @@ public final class PointerService extends AccessibilityService implements Shared
         String action = key == KeyEvent.KEYCODE_DPAD_CENTER ? "Click" : prefs.action(key);
         if (action.equals("Pass through")) return false;
         scrollInterrupted = true;
-        consumed.add(key); showCursor(); haptic(event.getDevice());
+        consumed.add(key); showCursor(); haptic(device);
         if (action.equals("Click")) {
             clickPending = true;
             handler.postDelayed(holdClick, 400);
         } else perform(action);
+        return true;
+    }
+
+    private boolean buttonUp(int key) {
+        if (swallowRelease.remove(key)) return true;
+        if (!consumed.remove(key)) return false;
+        directions.remove(key);
+        if (key == KeyEvent.KEYCODE_DPAD_CENTER || "Click".equals(prefs.action(key))) finishClick();
         return true;
     }
 
@@ -481,7 +528,10 @@ public final class PointerService extends AccessibilityService implements Shared
     @Override public void onInputDeviceAdded(int deviceId) { }
     @Override public void onInputDeviceChanged(int deviceId) { }
     @Override public void onInputDeviceRemoved(int deviceId) {
-        if (deviceId == lastDeviceId) prefs.data.edit().putBoolean("enabled", false).apply();
+        if (deviceId == lastDeviceId) {
+            handler.removeCallbacks(chordTimeout); chord.reset(); swallowRelease.clear();
+            prefs.data.edit().putBoolean("enabled", false).apply();
+        }
     }
     @Override public void onDestroy() {
         destroyed = true; connected = false;

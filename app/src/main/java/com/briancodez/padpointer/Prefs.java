@@ -24,6 +24,45 @@ final class Prefs {
     boolean enabled() { return data.getBoolean("enabled", false); }
     boolean forceKeyboard() { return data.getBoolean("keyboard", true); }
     boolean haptics() { return data.getBoolean("haptics", true); }
+    /** Buttons that turn the pointer on and off, held together. */
+    static final int[] DEFAULT_POINTER_BUTTONS = {KeyEvent.KEYCODE_BUTTON_THUMBL};
+    int[] pointerButtons() { return ButtonChord.parse(data.getString("pointerButtons", null), DEFAULT_POINTER_BUTTONS); }
+    String pointerButtonsName() { return buttonsName(pointerButtons()); }
+
+    static String buttonsName(int[] keys) {
+        StringBuilder out = new StringBuilder();
+        for (int key : keys) { if (out.length() > 0) out.append(" + "); out.append(buttonName(key)); }
+        return out.toString();
+    }
+    static String buttonName(int key) {
+        return switch (key) {
+            case KeyEvent.KEYCODE_BUTTON_A -> "A";
+            case KeyEvent.KEYCODE_BUTTON_B -> "B";
+            case KeyEvent.KEYCODE_BUTTON_C -> "C";
+            case KeyEvent.KEYCODE_BUTTON_X -> "X";
+            case KeyEvent.KEYCODE_BUTTON_Y -> "Y";
+            case KeyEvent.KEYCODE_BUTTON_Z -> "Z";
+            case KeyEvent.KEYCODE_BUTTON_L1 -> "L1";
+            case KeyEvent.KEYCODE_BUTTON_R1 -> "R1";
+            case KeyEvent.KEYCODE_BUTTON_L2 -> "L2";
+            case KeyEvent.KEYCODE_BUTTON_R2 -> "R2";
+            case KeyEvent.KEYCODE_BUTTON_THUMBL -> "L3";
+            case KeyEvent.KEYCODE_BUTTON_THUMBR -> "R3";
+            case KeyEvent.KEYCODE_BUTTON_START -> "Start";
+            case KeyEvent.KEYCODE_BUTTON_SELECT -> "Select";
+            case KeyEvent.KEYCODE_BUTTON_MODE -> "Guide";
+            case KeyEvent.KEYCODE_DPAD_UP -> "D-pad up";
+            case KeyEvent.KEYCODE_DPAD_DOWN -> "D-pad down";
+            case KeyEvent.KEYCODE_DPAD_LEFT -> "D-pad left";
+            case KeyEvent.KEYCODE_DPAD_RIGHT -> "D-pad right";
+            case KeyEvent.KEYCODE_DPAD_CENTER -> "D-pad center";
+            case KeyEvent.KEYCODE_BACK -> "Back";
+            default -> {
+                String name = KeyEvent.keyCodeToString(key).replace("KEYCODE_BUTTON_", "").replace("KEYCODE_", "");
+                yield name.isEmpty() ? "Button " + key : name.charAt(0) + name.substring(1).toLowerCase(java.util.Locale.US).replace('_', ' ');
+            }
+        };
+    }
     String action(int key) {
         String fallback = switch (key) {
             case KeyEvent.KEYCODE_BUTTON_A -> "Click";

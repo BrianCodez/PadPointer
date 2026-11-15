@@ -31,7 +31,9 @@ import android.widget.AdapterView;
 import android.widget.ProgressBar;
 import android.widget.Toast;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.Locale;
+import java.util.TreeSet;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -44,7 +46,8 @@ public final class MainActivity extends Activity implements SharedPreferences.On
     private Switch enable;
     private CursorView cursorPreview;
     private Spinner stylePicker;
-    private TextView colorSummary, imageSummary, stickHeader, leftValues, rightValues;
+    private TextView colorSummary, imageSummary, stickHeader, leftValues, rightValues, controls, onOffSummary;
+    private AlertDialog captureDialog;
     private ProgressBar leftMeter, rightMeter;
     private Button importButton;
     private InputManager inputs;
@@ -78,7 +81,12 @@ public final class MainActivity extends Activity implements SharedPreferences.On
             refresh();
         });
         section("Controls");
-        label("L3 · Pointer on / off\nLeft stick · Move     Right stick · Scroll\nD-pad · Precision move\nA · Tap; hold to drag\nB · Back     X · Double tap     Y · Long press\nStart · Home     Select · Recents\nL1 / R1 · Volume down / up\nR3 · Pass controller controls to your keyboard; press again to return", 15, 0xFFD8E3E9);
+        controls = label("", 15, 0xFFD8E3E9);
+        section("Pointer on / off");
+        onOffSummary = label("", 16, Color.WHITE);
+        button("Change on / off buttons…", this::captureOnOffButtons);
+        button("Reset to L3", () -> prefs.data.edit().remove("pointerButtons").apply());
+        label("Use one button or several held together, in any order. A single button always turns the pointer on or off, even in games. With a combination, each button keeps its normal use when pressed alone; while the pointer is on, those buttons wait a quarter second for the rest before doing their own action. R3 alone stays reserved for keyboard pass-through.", 13, 0xFFB7C5CE);
         section("Native keyboard");
         label("Text fields receive a screen tap and keep focus. Android opens your selected keyboard. Use the pointer to tap its keys, or press R3 if your keyboard supports controller navigation.", 15, 0xFFB7C5CE);
         toggle("Show on-screen keyboard with a controller connected", "keyboard", true);
@@ -140,7 +148,8 @@ public final class MainActivity extends Activity implements SharedPreferences.On
         mapping("L1", KeyEvent.KEYCODE_BUTTON_L1); mapping("R1", KeyEvent.KEYCODE_BUTTON_R1);
         mapping("L2", KeyEvent.KEYCODE_BUTTON_L2); mapping("R2", KeyEvent.KEYCODE_BUTTON_R2);
         mapping("Start", KeyEvent.KEYCODE_BUTTON_START); mapping("Select", KeyEvent.KEYCODE_BUTTON_SELECT);
-        label("L3 and R3 stay reserved so you can always leave pointer mode. Repeat click uses a saved location; press the mapped button again to stop. Pointer off, screen off, and controller disconnect also stop it.", 13, 0xFFB7C5CE);
+        mapping("L3", KeyEvent.KEYCODE_BUTTON_THUMBL);
+        label("R3 stays reserved for keyboard pass-through. Buttons in your on / off combination still use these actions when pressed alone. Repeat click uses a saved location; press the mapped button again to stop. Pointer off, screen off, and controller disconnect also stop it.", 13, 0xFFB7C5CE);
         button("Allow brightness control (optional)", () -> startActivity(new Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS, Uri.parse("package:" + getPackageName()))));
         section("Try your keyboard");
         label("Move the pointer over a field and press A. Your selected keyboard should open and stay open. These fields do not save anything.", 15, 0xFFB7C5CE);
@@ -162,6 +171,7 @@ public final class MainActivity extends Activity implements SharedPreferences.On
         if (prefs != null) { refresh(); refreshAppearance(); updateStickTest(); }
     }
     @Override public void onPause() {
+        if (captureDialog != null) captureDialog.dismiss();
         if (inputs != null) inputs.unregisterInputDeviceListener(this);
         leftX = leftY = rightX = rightY = 0; testDeviceId = -1;
         super.onPause();
@@ -262,8 +272,50 @@ public final class MainActivity extends Activity implements SharedPreferences.On
     }
     private void refresh() {
         if (status == null) return;
-        status.setText(!PointerService.connected ? "Service is off · enable it below" : prefs.enabled() ? "Service connected · pointer on" : "Service connected · press L3 or enable below");
+        String onOff = prefs.pointerButtonsName();
+        if (controls == null) return;
+        status.setText(!PointerService.connected ? "Service is off · enable it below" : prefs.enabled() ? "Service connected · pointer on" : "Service connected · press " + onOff + " or enable below");
+        controls.setText(onOff + " · Pointer on / off\nLeft stick · Move     Right stick · Scroll\nD-pad · Precision move\nA · Tap; hold to drag\nB · Back     X · Double tap     Y · Long press\nStart · Home     Select · Recents\nL1 / R1 · Volume down / up\nR3 · Pass controller controls to your keyboard; press again to return");
+        onOffSummary.setText("Current: " + onOff);
         if (enable != null && enable.isChecked() != prefs.enabled()) enable.setChecked(prefs.enabled());
+    }
+    /** Records the controller buttons held together, saved when the last one is released. */
+    private void captureOnOffButtons() {
+        TextView live = new TextView(this);
+        live.setTextSize(20); live.setTextColor(0xFF7BE0C3); live.setPadding(dp(24), dp(16), dp(24), dp(8));
+        live.setText("Waiting for your controller…");
+        HashSet<Integer> held = new HashSet<>();
+        TreeSet<Integer> chosen = new TreeSet<>();
+        captureDialog = new AlertDialog.Builder(this).setTitle("Pointer on / off buttons")
+                .setMessage("Hold the button or buttons you want together, then let go.")
+                .setView(live).setNegativeButton("Cancel", null).create();
+        captureDialog.setOnKeyListener((dialog, keyCode, event) -> {
+            if (!fromController(event)) return false;
+            if (event.getAction() == KeyEvent.ACTION_DOWN) {
+                if (event.getRepeatCount() == 0) { held.add(keyCode); chosen.add(keyCode); }
+                live.setText("Holding · " + Prefs.buttonsName(chosen.stream().mapToInt(Integer::intValue).toArray()));
+            } else if (event.getAction() == KeyEvent.ACTION_UP && held.remove(keyCode) && held.isEmpty() && !chosen.isEmpty()) {
+                int[] keys = chosen.stream().mapToInt(Integer::intValue).toArray();
+                chosen.clear();
+                if (keys.length == 1 && keys[0] == KeyEvent.KEYCODE_BUTTON_THUMBR) {
+                    live.setText("R3 alone is used for keyboard pass-through. Pick another button or add one to R3.");
+                } else {
+                    prefs.data.edit().putString("pointerButtons", ButtonChord.format(keys)).apply();
+                    Toast.makeText(this, "Pointer on / off · " + Prefs.buttonsName(keys), Toast.LENGTH_SHORT).show();
+                    dialog.dismiss();
+                }
+            }
+            return true;
+        });
+        captureDialog.setOnDismissListener(dialog -> { PointerService.capturing = false; captureDialog = null; });
+        PointerService.capturing = true;
+        captureDialog.show();
+    }
+    private static boolean fromController(KeyEvent event) {
+        InputDevice device = event.getDevice();
+        return event.isFromSource(InputDevice.SOURCE_GAMEPAD) || event.isFromSource(InputDevice.SOURCE_JOYSTICK)
+                || (device != null && (device.supportsSource(InputDevice.SOURCE_GAMEPAD) || device.supportsSource(InputDevice.SOURCE_JOYSTICK)))
+                || KeyEvent.isGamepadButton(event.getKeyCode());
     }
     private TextView label(String value, int sp, int color) {
         TextView text = new TextView(this); text.setText(value); text.setTextSize(sp); text.setTextColor(color);
