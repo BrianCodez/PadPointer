@@ -1,0 +1,12 @@
+<resources>
+    <string name="app_name">PadPointer</string>
+    <string name="service_description">Lets your controller move a pointer, tap, drag, scroll, and use navigation across apps. Taps go directly to the screen, including text fields and your selected keyboard. The service reads window information to place the pointer and detect the keyboard. Nothing is sent or stored from other apps. Enable it only if you want controller control.</string>
+    <style name="AppTheme" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:colorAccent">#7BE0C3</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:statusBarColor">#101820</item>
+        <item name="android:navigationBarColor">#101820</item>
+        <item name="android:windowBackground">#101820</item>
+    </style>
+</resources>

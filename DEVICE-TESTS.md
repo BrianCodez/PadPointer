@@ -1,0 +1,20 @@
+# Device acceptance tests (pending)
+
+Run these on Android 14 or newer with a physical controller. The APK has built-in unsaved text, email, number, and password fields for a first pass. Also use an unrelated browser and a native app to verify cross-app behavior.
+
+1. Install PadPointer, enable its accessibility service, connect the controller, and turn on the pointer. Check stick directions, deadzone, precision D-pad movement, and auto-hide.
+2. With the selected keyboard recorded, move over each built-in field and press A. Check that the tapped field retains input focus, the selected keyboard opens and remains visible, and the keyboard layout matches text/email/number/password input. Verify that password fields work normally.
+3. Use the stick and A to tap keys on the native keyboard. Check inserted text, cursor placement, backspace, and the keyboard's Enter/Next/Done actions. Repeat after switching Android's selected keyboard in system settings. PadPointer must not change the selection.
+4. Repeat a field tap in a different native app and in a browser's ordinary input, textarea, and contenteditable field. Compare each result with a physical finger tap in that same app. Custom editors that suppress the IME on a finger tap are expected to retain that behavior.
+5. Enable the hardware-keyboard option and connect a controller Android classifies as a keyboard. Repeat step 2. Disable PadPointer and verify that the prior system keyboard policy resumes.
+6. Press R3 while editing. An amber badge appears on the pointer and controller controls pass to the IME/app. Verify native controller navigation where the keyboard supports it. Press R3 again and check pointer movement without field-focus loss.
+7. Hold A and move to drag/select, then release. Check that touch-up occurs. During a drag, turn off the pointer and confirm that the touch is released. Try double tap and long press.
+8. Scroll long and short pages with the right stick, including scrolling while the keyboard is visible. Rotate the screen and check that the pointer stays within bounds and taps remain aligned with its tip, including around system bars and cutouts.
+9. Map Repeat click, start it, then stop it with the same button. Start it again and separately turn the pointer off, press R3, turn the screen off, and disconnect the controller. Verify that no clicks continue after each action.
+10. Check Back/Home/Recents, volume, screenshot, media, notifications, and optional brightness mappings. Turn the pointer off and check that the game/app receives its normal controller events.
+11. Disable the accessibility service and check that the cursor disappears. Re-enable it and verify clean startup. Confirm ordinary physical-keyboard typing is not intercepted.
+12. Select every built-in cursor style, each preset color, and custom hex colors. Check the live preview and actual overlay, including black and white on light/dark screens. Invalid hex input must show an error while retaining the previous color. Resize from 12 to 128 dp; arrow tips, dot centers, and crosshair centers must stay aligned with the actual touch location.
+13. Import a transparent PNG, an opaque JPEG, and a non-square WebP. Check preserved colors/alpha/aspect ratio, then adjust the image click point and verify taps at the selected point. Cancel the picker and try an invalid image; the previous cursor must remain intact. Restart the app/service and confirm settings and imported image persist. Changing the color of a built-in style must not recolor an imported image.
+14. With the pointer off, move each stick independently and check raw X/Y, magnitude bars, deadzone labels, and left-stick output. Adjust deadzone/curve and check the result changes. Turn the pointer on; testing must pause. Disconnect/reconnect the controller and verify readings clear and then resume normally. No controller input is stored.
+
+Record device model, Android version, controller model/transport, selected keyboard/version, affected app/version, result, and any relevant `dumpsys input_method`, window-focus, and crash logs. Never collect field contents or passwords for a test report.
