@@ -43,6 +43,10 @@ public final class MainActivity extends Activity implements SharedPreferences.On
     private Prefs prefs;
     private LinearLayout page;
     private TextView status;
+    private TextView wheelStatus;
+    private Switch wheelEnabled;
+    private WheelBridge wheelBridge;
+    private final Runnable wheelStatusChanged = this::refresh;
     private Switch enable;
     private CursorView cursorPreview;
     private Spinner stylePicker;
@@ -57,6 +61,7 @@ public final class MainActivity extends Activity implements SharedPreferences.On
     @Override public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         prefs = new Prefs(this);
+        wheelBridge = WheelBridge.get(this);
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
         page = new LinearLayout(this);
@@ -92,6 +97,21 @@ public final class MainActivity extends Activity implements SharedPreferences.On
         toggle("Show on-screen keyboard with a controller connected", "keyboard", true);
         label("The keyboard and target app retain their own behavior, just as with a finger tap. This option allows the keyboard when Android identifies your controller as a hardware keyboard.", 13, 0xFFB7C5CE);
         label("Android 14+ · Joystick capture leaves app focus intact.", 13, 0xFF7BE0C3);
+        section("Scrolling method");
+        wheelEnabled = toggle("Use Shizuku wheel scrolling (experimental)", "nativeScroll", false);
+        wheelStatus = label("", 14, 0xFF7BE0C3);
+        label("Shizuku mode sends mouse-wheel movement directly. Hold the right stick to scroll; speed follows its deflection. Apps decide how wheel movement is animated, and some may not support it. Turn this off to use Accessibility touch scrolling.", 14, 0xFFB7C5CE);
+        button("1 · Open or install Shizuku", () -> {
+            Intent launch = getPackageManager().getLaunchIntentForPackage("moe.shizuku.privileged.api");
+            startActivity(launch != null ? launch : new Intent(Intent.ACTION_VIEW, Uri.parse("https://shizuku.rikka.app/download/")));
+        });
+        button("2 · Connect / allow PadPointer", () -> {
+            prefs.data.edit().putBoolean("nativeScroll", true).apply();
+            wheelBridge.setEnabled(true);
+            wheelBridge.connect(true);
+        });
+        button("Shizuku setup guide", () -> startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse("https://shizuku.rikka.app/guide/setup/"))));
+        label("Start Shizuku with Wireless debugging (no root required), then connect above and allow PadPointer. Restart Shizuku after a phone reboot. Once connected, center the right stick before scrolling. If the connection fails, scrolling stops until you reconnect or select Accessibility. Your keyboard and click controls stay the same.", 13, 0xFFB7C5CE);
         section("Cursor appearance");
         cursorPreview = new CursorView(this);
         cursorPreview.setShowHotspot(true);
@@ -158,12 +178,18 @@ public final class MainActivity extends Activity implements SharedPreferences.On
         field("Number", InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
         field("Password", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
         button("Stop pointer", () -> { prefs.data.edit().putBoolean("enabled", false).apply(); refresh(); });
-        label("PadPointer 0.2 · Local controller control\nNo account. No ads. No network access.", 12, 0xFF8195A4);
+        label("PadPointer 0.3 · Local controller control\nNo account. No ads. No network access.", 12, 0xFF8195A4);
         refreshAppearance(); updateStickTest();
         refresh();
     }
-    @Override public void onStart() { super.onStart(); prefs.data.registerOnSharedPreferenceChangeListener(this); }
-    @Override public void onStop() { prefs.data.unregisterOnSharedPreferenceChangeListener(this); super.onStop(); }
+    @Override public void onStart() {
+        super.onStart(); prefs.data.registerOnSharedPreferenceChangeListener(this);
+        wheelBridge.listen(wheelStatusChanged); wheelBridge.setEnabled(prefs.nativeScroll()); refresh();
+    }
+    @Override public void onStop() {
+        wheelBridge.unlisten(wheelStatusChanged);
+        prefs.data.unregisterOnSharedPreferenceChangeListener(this); super.onStop();
+    }
     @Override public void onResume() {
         super.onResume();
         inputs = (InputManager) getSystemService(INPUT_SERVICE);
@@ -178,6 +204,7 @@ public final class MainActivity extends Activity implements SharedPreferences.On
     }
     @Override public void onDestroy() { imageWorker.shutdown(); super.onDestroy(); }
     @Override public void onSharedPreferenceChanged(SharedPreferences data, String key) {
+        wheelBridge.setEnabled(prefs.nativeScroll());
         refresh(); refreshAppearance();
         if ("enabled".equals(key)) { leftX = leftY = rightX = rightY = 0; testDeviceId = -1; }
         updateStickTest();
@@ -274,6 +301,8 @@ public final class MainActivity extends Activity implements SharedPreferences.On
         if (status == null) return;
         String onOff = prefs.pointerButtonsName();
         if (controls == null) return;
+        if (wheelStatus != null) wheelStatus.setText(wheelBridge.status());
+        if (wheelEnabled != null && wheelEnabled.isChecked() != prefs.nativeScroll()) wheelEnabled.setChecked(prefs.nativeScroll());
         status.setText(!PointerService.connected ? "Service is off · enable it below" : prefs.enabled() ? "Service connected · pointer on" : "Service connected · press " + onOff + " or enable below");
         controls.setText(onOff + " · Pointer on / off\nLeft stick · Move     Right stick · Scroll\nD-pad · Precision move\nA · Tap; hold to drag\nB · Back     X · Double tap     Y · Long press\nStart · Home     Select · Recents\nL1 / R1 · Volume down / up\nR3 · Pass controller controls to your keyboard; press again to return");
         onOffSummary.setText("Current: " + onOff);

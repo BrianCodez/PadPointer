@@ -12,7 +12,7 @@ https://github.com/BrianCodez/PadPointer
 
 In Obtainium, choose **Add app**, paste the URL, and add it with the default GitHub source settings. Releases contain one APK. Obtainium can check for and install future published releases; updates will still require publishing a new APK with a higher version code and the same signing key.
 
-Version 0.2.6 installs over earlier builds and preserves settings. Open PadPointer, enable **PadPointer controller mouse** in Android's accessibility settings, and turn on **Pointer enabled**. Android may require an additional confirmation for a sideloaded accessibility service. This is an early debug-signed test build; device verification is pending.
+Version 0.3.0 installs over earlier builds and preserves settings. Open PadPointer, enable **PadPointer controller mouse** in Android's accessibility settings, and turn on **Pointer enabled**. Android may require an additional confirmation for a sideloaded accessibility service. This is an early debug-signed test build; device verification is pending.
 
 The accessibility service must be enabled, but no floating accessibility shortcut is needed or requested. Use your on/off buttons (L3 by default) or the app's **Pointer enabled** switch. If Android retained a shortcut from an earlier version, open **Settings → Accessibility → PadPointer controller mouse** (under **Installed apps** on some devices) and turn off its **Shortcut** option while leaving the service itself enabled. See [Android's shortcut-removal instructions](https://support.google.com/accessibility/android/answer/7650693).
 
@@ -35,7 +35,7 @@ Move over an input field and press A. The app receives a 50 ms touch gesture; it
 
 Settings include speed, acceleration, deadzone, size, scrolling, inactivity hiding, vibration, and button mapping. Mappable actions also include drag toggle, notifications, screenshot, media play/pause, brightness, and repeat click at a saved location. Brightness access is optional. Repeat click stops with its mapped button, pointer off, screen off, keyboard pass-through, or controller disconnect.
 
-Joystick scrolling drags a virtual finger. Stick deflection sets the speed through a radial deadzone and a short smoothing ramp. Holding the stick scrolls continuously:
+In Accessibility mode, joystick scrolling drags a virtual finger. Stick deflection sets the speed through a radial deadzone and a short smoothing ramp. Holding the stick scrolls continuously:
 
 - **No gaps between segments.** Each segment is one display frame long, and about 40 ms of movement stays queued. Android then joins each stroke directly to the previous one.
 - **Controller input no longer stops the scroll.** On Android 14 and 15, every controller event that reaches an accessibility service cancels the injected touch (`MotionEventInjector.onMotionEvent`). Holding a stick can produce a steady stream of these events. PadPointer now places a new finger within about a millisecond and moves it past touch slop at once, keeping the current speed. Apps drop the slop distance from the first drag delta, so the content usually resumes within a frame or two. Very frequent controller events still make it choppy; see the known limitations under **Verification status**.
@@ -46,6 +46,22 @@ Joystick scrolling drags a virtual finger. Stick deflection sets the speed throu
 If a cancellation arrives with no controller input, such as a real finger on the screen, scrolling stops instead of fighting that touch. Returning the stick to neutral eases out over a few frames, then holds still before lifting so apps add no fling. The re-gripping finger follows the scrollable container under the cursor. Its bounds refresh on a background worker as toolbars collapse, so a slow target app cannot block the gesture callbacks; updated bounds may take a few hundred milliseconds to arrive. It stays clear of a visible keyboard when the cursor is outside it. This still uses touch gestures, not native mouse-wheel injection.
 
 Clicks and mapped actions end an active scroll touch first. After a mapped button interrupts scrolling, return the right stick to neutral before starting another scroll. **Scroll speed** still controls the overall rate.
+
+## Optional Shizuku wheel scrolling (0.3.0, experimental)
+
+This mode sends native `ACTION_SCROLL` mouse-wheel events through a Shizuku user service, rather than accessibility gesture segments. It avoids the accessibility gesture cancellation/re-grip cycle and has no virtual-finger screen edge. It is a new implementation inspired by Key Mapper's privileged bridge architecture; no Key Mapper code was copied. This release implements **wheel scrolling**, not direct touchscreen dragging. Apps control wheel scaling and animation; support and smoothness vary by app.
+
+1. Update PadPointer through Obtainium or the release APK.
+2. Install and start [Shizuku](https://shizuku.rikka.app/download/). Follow its [wireless-debugging setup guide](https://shizuku.rikka.app/guide/setup/); root is not required. Restart Shizuku after each phone reboot.
+3. In PadPointer, find **Scrolling method** and tap **Connect / allow PadPointer**. Allow the Shizuku request. This selects **Use Shizuku wheel scrolling**.
+4. Wait for **Connected · direct wheel scrolling ready**, then move the right stick and return it to center once. Hold it again to scroll. The existing Scroll speed setting applies.
+5. Turn off **Use Shizuku wheel scrolling** to return to Accessibility touch scrolling. If Shizuku stops or rejects injection, native scrolling stops and the app reports the problem; it never silently switches methods.
+
+Cursor appearance, controller mappings, accessibility-service setup, text-field taps, and selected-keyboard behavior remain available. No floating accessibility shortcut is needed. Shizuku is used only for wheel events: the bridge exposes neither arbitrary commands nor arbitrary key/touch injection. The included Shizuku API is MIT licensed; its notice is packaged in `assets/shizuku-license.txt`.
+
+Movement is scheduled using display frame callbacks, with fractional wheel deltas and a short speed ramp. Release/neutral, mapped actions, pointer off, keyboard pass-through, rotation, and controller disconnect clear pending scroll commands. Only the latest pending event is retained if input injection is slow, and events older than 80 ms are discarded. There is no held touch or autonomous scrolling loop in the privileged process. Shizuku's user service runs in non-daemon mode and exits with the app process.
+
+**Validation limits:** 56 JVM tests pass, the APK builds, and lint has no errors. Native wheel math and the pending-event mailbox are tested; permission prompts, service startup, real input injection, and app scrolling have NOT been verified on a running Android device. `PadPointer_API35` again crashed with SIGSEGV at boot and on the recommended diagnostic retry. The Shizuku user service uses a hidden input API; incompatibility is surfaced as an error rather than a crash or silent fallback. Treat 0.3.0 as a device-test build, not a confirmed smooth-scrolling fix.
 
 ## Cursor appearance and stick testing
 
@@ -81,7 +97,7 @@ Output: `app/build/outputs/apk/debug/app-debug.apk`. The supplied APK is a debug
 
 ## Verification status
 
-Debug build, 46 unit tests, Android lint, and APK signature verification passed. Configurable pointer on/off buttons were verified on the Android 15 emulator with a virtual gamepad. Combinations toggle in either order, single presses keep their actions, and repeated toggles stay reliable. The release includes `validation.txt` with the warnings; there are no lint errors. Unit tests cover noisy sticks, diagonal speed, acceleration, invalid data, screen bounds, scroll planning, stops, reversals, container edges, proportional speed, interruption, and touch slop.
+Debug build, 56 unit tests, Android lint, and APK signature verification passed. Configurable pointer on/off buttons were verified on the Android 15 emulator with a virtual gamepad. Combinations toggle in either order, single presses keep their actions, and repeated toggles stay reliable. The release includes `validation.txt` with the warnings; there are no lint errors. Unit tests cover noisy sticks, diagonal speed, acceleration, invalid data, screen bounds, scroll planning, stops, reversals, container edges, proportional speed, interruption, and touch slop.
 
 `ScrollDriverTest` holds the stick against `InjectorSimulation`, a model of Android's gesture injector based on the AOSP android14-release source.
 

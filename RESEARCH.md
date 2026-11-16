@@ -52,3 +52,22 @@ Sources:
 - [Android AccessibilityServiceInfo: motion-source selection](https://developer.android.com/reference/android/accessibilityservice/AccessibilityServiceInfo#setMotionEventSources(int))
 - [Android soft-keyboard controller](https://developer.android.com/reference/android/accessibilityservice/AccessibilityService.SoftKeyboardController)
 - [Window focus and touch flags](https://developer.android.com/reference/android/view/WindowManager.LayoutParams)
+
+
+## Key Mapper and Shizuku investigation (0.3.0)
+
+Inspected Key Mapper commit `5e01aad089f12439c9ac76a1520f2ff710e83de8`. Its README lists joysticks/triggers as unsupported. `BaseAccessibilityService.swipeScreen` builds a finite `GestureDescription` and uses `dispatchGesture`; `NodeInteractionType` also exposes accessibility scroll-forward/backward actions. Its `SystemBridge.injectInputEvent` forwards to the privileged input manager, while the bridge process requires root or shell identity. That bridge mechanism inspired PadPointer's separate native-wheel backend; Key Mapper does not supply a ready-made continuous joystick scroller, and no Key Mapper implementation was copied.
+
+Sources:
+- https://github.com/keymapperorg/KeyMapper/blob/5e01aad089f12439c9ac76a1520f2ff710e83de8/base/src/main/java/io/github/sds100/keymapper/base/system/accessibility/BaseAccessibilityService.kt
+- https://github.com/keymapperorg/KeyMapper/blob/5e01aad089f12439c9ac76a1520f2ff710e83de8/sysbridge/src/main/java/io/github/sds100/keymapper/sysbridge/service/SystemBridge.kt
+- https://github.com/RikkaApps/Shizuku-API (API setup, provider protection, permission flow, user-service lifecycle and hidden-API availability)
+- https://shizuku.rikka.app/guide/setup/ (non-root wireless-debugging setup and restart requirement)
+
+PadPointer 0.3.0 uses Shizuku API/provider 13.1.5. The user service is non-daemon, exposes only initialization and bounded wheel injection, and uses reflection for `InputManagerGlobal.injectInputEvent` inside the privileged process. Ordinary app code does not attempt to call that hidden API. Failed initialization or rejected injection produces visible connection status. Scroll mode is opt-in; the no-Shizuku accessibility path remains available. This is not evidence of runtime compatibility: the Android emulator failed to boot, so Shizuku connection and real scrolling await device testing.
+
+
+Android 14's `InputManagerGlobal` exposes `getInstance()` and two-argument `injectInputEvent`. Android 15's shell input implementation uses this class as well. Avoid the legacy `InputManager.getInstance()` entry point: Android 15 requires `ActivityThread.currentApplication()`, which a Shizuku user service need not have. Verified against:
+- https://github.com/aosp-mirror/platform_frameworks_base/blob/android14-release/core/java/android/hardware/input/InputManagerGlobal.java
+- https://github.com/aosp-mirror/platform_frameworks_base/blob/android15-release/services/core/java/com/android/server/input/InputShellCommand.java
+- https://github.com/aosp-mirror/platform_frameworks_base/blob/android15-release/core/java/android/hardware/input/InputManager.java

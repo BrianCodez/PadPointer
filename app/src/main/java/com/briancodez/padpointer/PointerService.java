@@ -26,6 +26,7 @@ import android.os.Vibrator;
 import android.provider.Settings;
 import android.util.DisplayMetrics;
 import android.view.Display;
+import android.view.Choreographer;
 import android.view.Gravity;
 import android.view.InputDevice;
 import android.view.KeyEvent;
@@ -53,6 +54,18 @@ public final class PointerService extends AccessibilityService implements Shared
     private final ArrayDeque<GestureDescription> gestures = new ArrayDeque<>();
     private final ArrayDeque<String> deferredActions = new ArrayDeque<>();
     private Prefs prefs;
+    private WheelBridge wheelBridge;
+    private final WheelMotion wheelMotion = new WheelMotion();
+    private boolean nativeMode, nativeNeedsCenter = true, nativeWasReady;
+    private float wheelHorizontalFactor, wheelVerticalFactor;
+    private final Runnable wheelConnectionChanged = () -> {
+        boolean ready = wheelBridge.ready();
+        if (ready != nativeWasReady) {
+            nativeWasReady = ready; nativeNeedsCenter = true; stopNativeScroll();
+            if (this.enabled && nativeMode) toast(ready ? "Shizuku connected · center the right stick to scroll"
+                    : "Shizuku scrolling unavailable · reconnect in PadPointer");
+        }
+    };
     private WindowManager windows;
     private CursorView cursor;
     private WindowManager.LayoutParams cursorParams;
@@ -64,7 +77,7 @@ public final class PointerService extends AccessibilityService implements Shared
     private int lastDeviceId = -1;
     /** Dispatched gestures (taps, drags, and scroll segments) still awaiting Android's result. */
     private int inFlight;
-    private long lastFrame, lastActivity;
+    private long lastFrameNanos, lastActivity;
     private GestureDescription.StrokeDescription stroke;
     private boolean scrollInterrupted;
     /** Newest stroke of the scrolling finger, which the next segment continues. */
@@ -88,7 +101,7 @@ public final class PointerService extends AccessibilityService implements Shared
         @Override public float deadzone() { return prefs.deadzone(); }
         @Override public float speed() { return Math.min(width, height) * 1.2f * prefs.data.getInt("scroll", 100) / 100f; }
         @Override public boolean stickHeld() { return scrollStickHeld(); }
-        @Override public boolean blocked() { return scrollBlocked(); }
+        @Override public boolean blocked() { return scrollBlocked() || nativeMode; }
         @Override public ScrollMotion.Area refreshArea() { return refreshScrollArea(); }
         @Override public long now() { return SystemClock.uptimeMillis(); }
         @Override public void staleTouch(int x, int y) { staleTouch = new int[]{x, y}; stalePackage = scrollPackage; }
@@ -111,12 +124,17 @@ public final class PointerService extends AccessibilityService implements Shared
             handler.postDelayed(this, prefs.repeatMs());
         }
     };
-    private final Runnable frame = new Runnable() {
-        @Override public void run() {
+    private final Choreographer.FrameCallback frame = new Choreographer.FrameCallback() {
+        @Override public void doFrame(long frameTimeNanos) {
             if (destroyed) return;
             long now = SystemClock.uptimeMillis();
-            float dt = Math.min(0.05f, (now - lastFrame) / 1000f);
-            lastFrame = now;
+            // Use the display clock, not callback arrival time, to avoid converting main-thread
+            // scheduling jitter into speed changes on high-refresh displays.
+            float dt = lastFrameNanos == 0 ? 0.016f
+                    : Math.max(0, Math.min(0.05f, (frameTimeNanos - lastFrameNanos) / 1_000_000_000f));
+            lastFrameNanos = frameTimeNanos;
+            if (!nativeMode || !enabled || typing || scrollBlocked() || !scrollStickHeld()
+                    || !wheelBridge.ready() || nativeNeedsCenter) stopNativeScroll();
             if (enabled && !typing) {
                 float[] velocity = PointerMath.velocity(axisX, axisY, prefs.deadzone(), prefs.curve());
                 float dx = velocity[0], dy = velocity[1];
@@ -135,11 +153,14 @@ public final class PointerService extends AccessibilityService implements Shared
                     if (stroke != null) continueDrag();
                     else if (!gestures.isEmpty()) pump();
                     else if (dragging) continueDrag();
-                    else if (scrollRequested()) startScroll();
+                    else if (scrollRequested()) {
+                        if (nativeMode) scrollNative(dt, now);
+                        else startScroll();
+                    }
                 }
                 if (prefs.timeout() > 0 && now - lastActivity > prefs.timeout() * 1000L && !dragging && !scroller.active() && !repeat) cursor.setVisibility(View.INVISIBLE);
             }
-            handler.postDelayed(this, 16);
+            Choreographer.getInstance().postFrameCallback(this);
         }
     };
     private final BroadcastReceiver screenOff = new BroadcastReceiver() {
@@ -149,6 +170,11 @@ public final class PointerService extends AccessibilityService implements Shared
     @Override protected void onServiceConnected() {
         connected = true;
         prefs = new Prefs(this);
+        wheelBridge = WheelBridge.get(this);
+        wheelBridge.listen(wheelConnectionChanged);
+        ViewConfiguration configuration = ViewConfiguration.get(this);
+        wheelHorizontalFactor = configuration.getScaledHorizontalScrollFactor();
+        wheelVerticalFactor = configuration.getScaledVerticalScrollFactor();
         windows = (WindowManager) getSystemService(WINDOW_SERVICE);
         updateBounds(); x = width / 2; y = height / 2;
         cursor = new CursorView(this);
@@ -166,8 +192,8 @@ public final class PointerService extends AccessibilityService implements Shared
         inputs.registerInputDeviceListener(this, handler);
         registerReceiver(screenOff, new IntentFilter(Intent.ACTION_SCREEN_OFF), Context.RECEIVER_NOT_EXPORTED);
         applyPreferences();
-        lastFrame = SystemClock.uptimeMillis();
-        handler.post(frame);
+        lastFrameNanos = 0;
+        Choreographer.getInstance().postFrameCallback(frame);
     }
 
     private void updateBounds() {
@@ -181,15 +207,23 @@ public final class PointerService extends AccessibilityService implements Shared
         super.onConfigurationChanged(configuration);
         if (windows == null) return;
         axisX = axisY = scrollX = scrollY = 0; dragging = false;
+        stopNativeScroll(); nativeNeedsCenter = true;
         updateBounds(); moveCursor();
     }
 
     @Override public void onSharedPreferenceChanged(SharedPreferences data, String key) { applyPreferences(); }
 
     private void applyPreferences() {
+        boolean changedMode = nativeMode != prefs.nativeScroll();
+        nativeMode = prefs.nativeScroll();
+        if (changedMode) {
+            scrollX = scrollY = 0; nativeNeedsCenter = true; stopNativeScroll();
+        }
+        wheelBridge.setEnabled(nativeMode);
         boolean wasEnabled = enabled;
         enabled = prefs.enabled();
         if (!enabled || !wasEnabled) {
+            stopNativeScroll(); nativeNeedsCenter = true;
             axisX = axisY = scrollX = scrollY = 0;
             directions.clear(); gestures.clear(); deferredActions.clear();
             clickPending = false; dragging = false; typing = false;
@@ -234,7 +268,9 @@ public final class PointerService extends AccessibilityService implements Shared
         axisX = event.getAxisValue(MotionEvent.AXIS_X); axisY = event.getAxisValue(MotionEvent.AXIS_Y);
         scrollX = GamepadAxes.rightX(event);
         scrollY = GamepadAxes.rightY(event);
-        if (Math.hypot(scrollX, scrollY) <= prefs.deadzone()) scrollInterrupted = false;
+        if (Math.hypot(scrollX, scrollY) <= prefs.deadzone()) {
+            scrollInterrupted = false; nativeNeedsCenter = false; stopNativeScroll();
+        }
         // On Android 14-15 this event has just cancelled any injected touch; the scroller re-grips.
         scroller.stickMoved();
         // Some controllers expose their D-pad only as HAT axes.
@@ -298,6 +334,7 @@ public final class PointerService extends AccessibilityService implements Shared
         if (!enabled) return false;
         if (key == KeyEvent.KEYCODE_BUTTON_THUMBR) {
             consumed.add(key); typing = !typing;
+            stopNativeScroll(); nativeNeedsCenter = true;
             axisX = axisY = scrollX = scrollY = 0; directions.clear(); stopRepeat();
             clickPending = false; dragging = false; gestures.clear(); deferredActions.clear(); handler.removeCallbacks(holdClick);
             pump();
@@ -314,6 +351,7 @@ public final class PointerService extends AccessibilityService implements Shared
         String action = key == KeyEvent.KEYCODE_DPAD_CENTER ? "Click" : prefs.action(key);
         if (action.equals("Pass through")) return false;
         scrollInterrupted = true;
+        stopNativeScroll();
         consumed.add(key); showCursor(); haptic(device);
         if (action.equals("Click")) {
             clickPending = true;
@@ -436,6 +474,18 @@ public final class PointerService extends AccessibilityService implements Shared
                 || !gestures.isEmpty() || !deferredActions.isEmpty();
     }
     private boolean scrollRequested() { return !busy() && !scrollBlocked() && scrollStickHeld(); }
+    private void scrollNative(float dt, long now) {
+        if (!wheelBridge.ready() || nativeNeedsCenter) return;
+        float speed = Math.min(width, height) * 1.2f * prefs.data.getInt("scroll", 100) / 100f;
+        float[] delta = wheelMotion.step(scrollX, scrollY, prefs.deadzone(), speed, dt,
+                wheelHorizontalFactor, wheelVerticalFactor);
+        wheelBridge.scroll(x, y, delta[0], delta[1], now);
+        showCursor();
+    }
+    private void stopNativeScroll() {
+        wheelMotion.reset();
+        if (wheelBridge != null) wheelBridge.stop();
+    }
     private void startScroll() {
         scrollOriginX = x; scrollOriginY = y;
         ScrollMotion motion = new ScrollMotion(scrollArea(), x, y, ViewConfiguration.get(this).getScaledTouchSlop(), gestureSampleMs());
@@ -597,6 +647,9 @@ public final class PointerService extends AccessibilityService implements Shared
     }
     @Override public void onDestroy() {
         destroyed = true; connected = false;
+        stopNativeScroll();
+        if (wheelBridge != null) wheelBridge.unlisten(wheelConnectionChanged);
+        Choreographer.getInstance().removeFrameCallback(frame);
         scroller.abandon();
         scrollBoundsWorker.shutdownNow();
         handler.removeCallbacksAndMessages(null);

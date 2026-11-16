@@ -24,6 +24,7 @@ final class Prefs {
     boolean enabled() { return data.getBoolean("enabled", false); }
     boolean forceKeyboard() { return data.getBoolean("keyboard", true); }
     boolean haptics() { return data.getBoolean("haptics", true); }
+    boolean nativeScroll() { return data.getBoolean("nativeScroll", false); }
     /** Buttons that turn the pointer on and off, held together. */
     static final int[] DEFAULT_POINTER_BUTTONS = {KeyEvent.KEYCODE_BUTTON_THUMBL};
     int[] pointerButtons() { return ButtonChord.parse(data.getString("pointerButtons", null), DEFAULT_POINTER_BUTTONS); }
